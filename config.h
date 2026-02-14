@@ -32,6 +32,11 @@ specific needs, i.e. performance tuning or adjusting to non-typical machines.
 #ifndef _GRBL_CONFIG_H_
 #define _GRBL_CONFIG_H_
 
+#define N_AXIS 4
+#define NGC_EXPRESSIONS_ENABLE On
+#define ENABLE_BACKLASH_COMPENSATION On
+#define N_TOOLS 10
+
 // Compile time only default configuration
 
 /*! \def N_AXIS
