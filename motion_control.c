@@ -631,7 +631,9 @@ bool mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
                     break;
 
                 default:
-                    position[plane.axis_linear] = retract_to;
+                    // thf
+                    //   position[plane.axis_linear] = retract_to;
+                    position[plane.axis_linear] = canned->retract_position;
                     break;
             }
 
@@ -644,6 +646,14 @@ bool mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_
                     return false;
             }
         }
+
+        // thf
+        if (canned->retract_mode != CCRetractMode_RPos) {
+            position[plane.axis_linear] = retract_to;
+            if(!mc_line(position, pl_data))
+                return false;
+        }
+        // end thf
 
         pl_data->condition.rapid_motion = On; // Set rapid motion condition flag.
 
