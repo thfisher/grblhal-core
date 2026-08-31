@@ -37,7 +37,7 @@
 #include "motion_control.h"
 #include "tool_change.h"
 #ifdef KINEMATICS_API
-#include "kinematics.h"
+#include "kinematics/interface.h"
 #endif
 
 #if ENABLE_BACKLASH_COMPENSATION
@@ -79,12 +79,15 @@ void mc_sync_backlash_position (void)
 // segments, must pass through this routine before being passed to the planner. The separation of
 // mc_line and plan_buffer_line is done primarily to place non-planner-type functions from being
 // in the planner and to let backlash compensation or canned cycle integration simple and direct.
-bool mc_line (float *target, plan_line_data_t *pl_data)
+// NOTE: the status code returned on success is Status_Handled (254), on abort Status_Aborted (0)
+// is returned - which is the same value as Status_OK. This is per design and in order not to break existing
+// code that just test for success (!= 0)  or failure (0).
+status_code_t mc_line (float *target, plan_line_data_t *pl_data)
 {
 #ifdef KINEMATICS_API
     float feed_rate = pl_data->feed_rate;
     pl_data->rate_multiplier = 1.0f;
-    target = kinematics.segment_line(target, plan_get_position(), pl_data, true);
+    target = kinematics.segment_line((coord_data_t *)target, (coord_data_t *)plan_get_position(), pl_data, true)->values;
 #endif
 
     // If enabled, check for soft limit violations. Placed here all line motions are picked up
@@ -110,7 +113,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // parser and planner are separate from the system machine positions, this is doable.
 
 #ifdef KINEMATICS_API
-      while(kinematics.segment_line(target, NULL, pl_data, false)) {
+      while(kinematics.segment_line((coord_data_t *)target, NULL, pl_data, false)) {
 #endif
 
 #if ENABLE_BACKLASH_COMPENSATION
@@ -154,7 +157,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
                 while(plan_check_full_buffer()) {
                     protocol_auto_cycle_start();     // Auto-cycle start when buffer is full.
                     if(!protocol_execute_realtime()) // Check for any run-time commands
-                        return false;                // Bail, if system abort.
+                        return Status_Aborted;       // Bail, if system abort.
                 }
 
                 plan_buffer_line(target_prev.values, &pl_backlash);
@@ -169,7 +172,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // Remain in this loop until there is room in the buffer.
          do {
             if(!protocol_execute_realtime())    // Check for any run-time commands
-                return false;                   // Bail, if system abort.
+                return Status_Aborted;          // Bail, if system abort.
             if(plan_check_full_buffer())
                 protocol_auto_cycle_start();    // Auto-cycle start when buffer is full.
             else
@@ -179,10 +182,12 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
         // Plan and queue motion into planner buffer.
         // While in M3 laser mode also set spindle state and force a buffer sync
         // if there is a coincident position passed.
-        if(!plan_buffer_line(target, pl_data) && pl_data->spindle.hal->cap.laser && pl_data->spindle.state.on && !pl_data->spindle.state.ccw) {
-            protocol_buffer_synchronize();
+        if(!plan_buffer_line(target, pl_data) &&
+            pl_data->spindle.hal->cap.laser &&
+             pl_data->spindle.state.on &&
+              !pl_data->spindle.state.ccw &&
+                protocol_buffer_synchronize())
             pl_data->spindle.hal->set_state(pl_data->spindle.hal, pl_data->spindle.state, pl_data->spindle.rpm);
-        }
 
 #ifdef KINEMATICS_API
         if(pl_data->condition.jog_motion) {
@@ -201,7 +206,7 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
 #endif
     }
 
-    return !ABORTED;
+    return ABORTED ? Status_Aborted : Status_Handled;
 }
 
 // Execute an arc in offset mode format. position == current xyz, target == target xyz,
@@ -211,7 +216,10 @@ bool mc_line (float *target, plan_line_data_t *pl_data)
 // The arc is approximated by generating a huge number of tiny, linear segments. The chordal tolerance
 // of each segment is configured in settings.arc_tolerance, which is defined to be the maximum normal
 // distance from segment to the circle when the end points both lie on the circle.
-void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *offset, float radius, plane_t plane, int32_t turns)
+// NOTE: the status code returned on success is Status_Handled (254), on abort Status_Aborted (0)
+// is returned - which is the same value as Status_OK. This is per design and in order not to break existing
+// code that just test for success (!= 0)  or failure (0).
+status_code_t mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *offset, float radius, plane_t plane, int32_t turns)
 {
     typedef union {
         double values[2];
@@ -356,6 +364,7 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
         float cos_Ti;
         float r_axisi;
         uint_fast16_t i, count = 0;
+        status_code_t status;
 
         for (i = 1; i < segments; i++) { // Increment (segments-1).
 
@@ -390,13 +399,13 @@ void mc_arc (float *target, plan_line_data_t *pl_data, float *position, float *o
 #endif
 
             // Bail mid-circle on system abort. Runtime command check already performed by mc_line.
-            if(!mc_line(position, pl_data))
-                return;
+            if((status = mc_line(position, pl_data)) != Status_Handled)
+                return status;
         }
     }
 
     // Ensure last segment arrives at target location.
-    mc_line(target, pl_data);
+    return mc_line(target, pl_data);
 }
 
 // Bezier splines, from a pull request for Marlin
@@ -474,7 +483,7 @@ static inline float dist1 (const float x1, const float y1, const float x2, const
  * power available on Arduino, I think it is not wise to implement it.
  */
 
-void mc_cubic_b_spline (float *target, plan_line_data_t *pl_data, float *position, float *first, float *second)
+FLASHMEM void mc_cubic_b_spline (float *target, plan_line_data_t *pl_data, float *position, float *first, float *second)
 {
     float bez_target[N_AXIS];
 
@@ -564,7 +573,7 @@ void mc_cubic_b_spline (float *target, plan_line_data_t *pl_data, float *positio
 
 // end Bezier splines
 
-bool mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_data, float *position, plane_t plane, uint32_t repeats, gc_canned_t *canned)
+FLASHMEM bool mc_canned_drill (motion_mode_t motion, float *target, plan_line_data_t *pl_data, float *position, plane_t plane, uint32_t repeats, gc_canned_t *canned)
 {
     pl_data->condition.rapid_motion = On; // Set rapid motion condition flag.
 
@@ -684,7 +693,7 @@ inline static float calc_thread_doc (uint_fast16_t pass, float cut_depth, float 
 
 // TODO: change pitch to follow any tapers
 
-void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thread, bool feed_hold_disabled)
+FLASHMEM void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thread, bool feed_hold_disabled)
 {
     uint_fast16_t pass = 1, passes = 0;
     float doc = thread->initial_depth, inv_degression = 1.0f / thread->depth_degression, thread_length;
@@ -804,8 +813,22 @@ void mc_thread (plan_line_data_t *pl_data, float *position, gc_thread_data *thre
     }
 }
 
+#if LATHE_UVW_OPTION && NGC_EXPRESSIONS_ENABLE
+
+FLASHMEM __attribute__((weak)) status_code_t mc_lathe_cycle (plan_line_data_t *pl_data, coord_data_t *position, uint32_t o_label, lathe_cycle_arguments_t *args)
+{
+    return Status_GcodeUnsupportedCommand; // TBC
+}
+
+#endif
+
+FLASHMEM __attribute__((weak))  status_code_t mc_rigid_tapping (plan_line_data_t *pl_data, coord_data_t *target, coord_data_t *position, float pitch, float rpm_multiplier)
+{
+    return Status_GcodeUnsupportedCommand; // TBC
+}
+
 // Sets up valid jog motion received from g-code parser, checks for soft-limits, and executes the jog.
-status_code_t mc_jog_execute (plan_line_data_t *pl_data, parser_block_t *gc_block, float *position)
+FLASHMEM status_code_t mc_jog_execute (plan_line_data_t *pl_data, parser_block_t *gc_block, float *position)
 {
     // Initialize planner data struct for jogging motions.
     // NOTE: Spindle and coolant are allowed to fully function with overrides during a jog.
@@ -837,7 +860,7 @@ status_code_t mc_jog_execute (plan_line_data_t *pl_data, parser_block_t *gc_bloc
 }
 
 // Execute dwell in seconds.
-void mc_dwell (float seconds)
+FLASHMEM void mc_dwell (float seconds)
 {
     if (state_get() != STATE_CHECK_MODE) {
         protocol_buffer_synchronize();
@@ -848,7 +871,7 @@ void mc_dwell (float seconds)
 // Perform homing cycle to locate and set machine zero. Only '$H' executes this command.
 // NOTE: There should be no motions in the buffer and grblHAL must be in an idle state before
 // executing the homing cycle. This prevents incorrect buffered plans after homing.
-status_code_t mc_homing_cycle (axes_signals_t cycle)
+FLASHMEM status_code_t mc_homing_cycle (axes_signals_t cycle)
 {
     bool home_all = cycle.mask == 0;
     status_code_t homed_status = Status_OK;
@@ -1000,7 +1023,7 @@ status_code_t mc_homing_cycle (axes_signals_t cycle)
 
 // Perform tool length probe cycle. Requires probe switch.
 // NOTE: Upon probe failure, the program will be stopped and placed into ALARM state.
-gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_flags_t parser_flags)
+FLASHMEM gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_flags_t parser_flags)
 {
     uint_fast8_t idx = N_AXIS;
 
@@ -1126,7 +1149,7 @@ gc_probe_t mc_probe_cycle (float *target, plan_line_data_t *pl_data, gc_parser_f
 
 // Plans and executes the single special motion case for parking. Independent of main planner buffer.
 // NOTE: Uses the always free planner ring buffer head to store motion parameters for execution.
-bool mc_parking_motion (float *parking_target, plan_line_data_t *pl_data)
+FLASHMEM bool mc_parking_motion (float *parking_target, plan_line_data_t *pl_data)
 {
     bool ok;
 
@@ -1144,7 +1167,7 @@ bool mc_parking_motion (float *parking_target, plan_line_data_t *pl_data)
     return ok;
 }
 
-void mc_override_ctrl_update (gc_override_flags_t override_state)
+FLASHMEM void mc_override_ctrl_update (gc_override_flags_t override_state)
 {
  // Finish all queued commands before altering override control state
     if(sys.override.control.value != override_state.value)

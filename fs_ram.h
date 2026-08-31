@@ -1,9 +1,11 @@
 /*
-  delta.c - delta kinematics implementation
+  fs_ram.h - heap based in memory filing system
+
+  NOTE: files will be deleted on first close after opened for reading.
 
   Part of grblHAL
 
-  Copyright (c) 2023 Terje Io
+  Copyright (c) 2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,10 +21,4 @@
   along with grblHAL. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef _delta_H_
-#define _delta_H_
-
-// Initialize HAL pointers for delta kinematics
-void delta_robot_init (void);
-
-#endif
+void fs_ram_mount (void);

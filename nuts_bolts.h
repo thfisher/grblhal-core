@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2017-2025 Terje Io
+  Copyright (c) 2017-2026 Terje Io
   Copyright (c) 2011-2016 Sungeun K. Jeon for Gnea Research LLC
   Copyright (c) 2009-2011 Simen Svale Skogsrud
 
@@ -243,6 +243,8 @@
 
 #endif
 
+typedef uint32_t line_number_t;
+
 typedef union {
     uint8_t mask;
     uint8_t bits;
@@ -324,7 +326,7 @@ typedef struct {
 } coord_system_data_t;
 
 typedef union {
-    int32_t value[N_AXIS];
+    int32_t values[N_AXIS];
     struct {
         int32_t x;
         int32_t y;
@@ -358,7 +360,20 @@ typedef union {
         float x;
         float y;
     };
+    struct {
+        float z;
+        float x;
+    } g18;
+/*    struct {
+        float y;
+        float z;
+    } g19; */
 } point_2d_t;
+
+typedef struct {
+    point_2d_t min;
+    point_2d_t max;
+} bbox_2d_t;
 
 typedef union {
     float values[3];
@@ -368,6 +383,11 @@ typedef union {
         float z;
     };
 } point_3d_t;
+
+typedef struct {
+    point_3d_t min;
+    point_3d_t max;
+} bbox_3d_t;
 
 //! Axis index to plane assignment.
 typedef union {
@@ -529,5 +549,6 @@ static int ffs (int i)
 }
 
 #endif // _WIN32
+
 
 #endif

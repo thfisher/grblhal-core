@@ -23,17 +23,16 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #include "hal.h"
 #include "vfs.h"
 
-#ifndef VFS_CWD_LENGTH
-#define VFS_CWD_LENGTH 100
-#endif
-
 #ifdef ARDUINO_SAM_DUE
 #undef feof
 #endif
+
+typedef void (*vfs_ptr)(void);
 
 static vfs_mount_t *get_rootfs (void);
 
@@ -47,6 +46,9 @@ static inline vfs_mount_t *path_is_mount_dir (const char *path)
         return mount;
 
     size_t mlen;
+
+    if(*(path + plen - 1) == '/')
+        plen--;
 
     if((mount = mount->next)) do {
         mlen = strlen(mount->path) - 1;
@@ -108,11 +110,11 @@ static vfs_dir_t *fs_opendir (const char *path)
     static vfs_dir_t *dir = NULL;
 
     if(dir == NULL)
-        dir = calloc(sizeof(vfs_dir_t) + 3, 1);
+        dir = calloc(1, sizeof(vfs_dir_t) + 3);
 
     if(dir) {
         vfs_mount_t **mount = (vfs_mount_t **)&dir->handle;
-        *mount = get_rootfs()->next;
+        *mount = get_rootfs();
     }
 
     return !strcmp(path, "/") ? dir : NULL;
@@ -120,23 +122,30 @@ static vfs_dir_t *fs_opendir (const char *path)
 
 static char *fs_readdir (vfs_dir_t *dir, vfs_dirent_t *dirent)
 {
+/*
     vfs_mount_t **mount = (vfs_mount_t **)&dir->handle;
 
     vfs_errno = 0;
 
     if(*mount) {
-        strcpy(dirent->name, (*mount)->path);
-        *(strchr(dirent->name, '\0') - 1) = '\0';
+        strcpy(dirent->name, (*mount)->path + 1);
+        if(*dirent->name)
+            *(strchr(dirent->name, '\0') - 1) = '\0';
         dirent->st_mode = (*mount)->mode;
         dirent->st_mode.directory = true;
-        while((*mount = (*mount)->next)) {
-            if(!(*mount)->mode.hidden)
-                break;
-        }
+        *mount = NULL;
+//      while((*mount = (*mount)->next)) {
+//          if(!(*mount)->mode.hidden)
+//              break;
+//      }
     } else
         *dirent->name = '\0';
 
     return *dirent->name ? dirent->name : NULL;
+*/
+    *dirent->name = '\0';
+
+    return NULL;
 }
 
 static void fs_closedir (vfs_dir_t *dir)
@@ -145,10 +154,19 @@ static void fs_closedir (vfs_dir_t *dir)
 
 static int fs_stat (const char *filename, vfs_stat_t *st)
 {
-    char path[64];
+    char path[64], *fpath = path;
     vfs_mount_t *mount;
+    size_t len = strlen(filename) + 2; // leading '/' + terminating '\0'
 
-    if((mount = path_is_mount_dir(strcat(strcpy(path, "/"), filename)))) {
+    if(len > sizeof(path) && (fpath = malloc(len)) == NULL)
+        return (vfs_errno = -1);
+
+    mount = path_is_mount_dir(strcat(strcpy(fpath, "/"), filename));
+
+    if(fpath != path)
+        free(fpath);
+
+    if(mount) {
 
         if(!(mount->vfs->fstat && (vfs_errno = mount->vfs->fstat("/", st) == 0))) {
 
@@ -178,7 +196,7 @@ static char *fs_getcwd (char *buf, size_t size)
     return "/";
 }
 
-static const vfs_t fs_null = {
+PROGMEM static const vfs_t fs_null = {
     .fopen = fs_open,
     .fclose = fs_close,
     .fread = fs_read,
@@ -206,14 +224,15 @@ static vfs_mount_t root = {
     .next = NULL
 };
 static vfs_mount_t *cwdmount = &root;
-static char cwd[VFS_CWD_LENGTH] = "/";
+static char _cwd[101] = "/";
+static vfs_path_t cwd = { .name = _cwd, .len = sizeof(_cwd) - 1 };
 
 volatile int vfs_errno = 0;
 vfs_events_t vfs = {0};
 
 static vfs_mount_t *get_rootfs (void)
 {
-    return &root;    
+    return &root;
 }
 
 // Strip trailing directory separator, FatFS dont't like it (WinSCP adds it)
@@ -224,6 +243,48 @@ char *vfs_fixpath (char *path)
         *s = '\0';
 
     return path;
+}
+
+static const char *parse_path (const char *path)
+{
+    static vfs_path_t abspath = {0};
+
+    if(strlen(cwd.name) + strlen(path) + 1 > abspath.len) {
+        abspath.len = max(50, strlen(cwd.name)) + strlen(path) + 1;
+        abspath.name = realloc(abspath.name, abspath.len);
+    }
+
+    if(abspath.name) {
+
+        char *newpath;
+
+        if((newpath = malloc(strlen(path) + 1))) {
+
+            strcpy(newpath, path);
+            strcpy(abspath.name, *path == '/' ? "/" : cwd.name);
+
+            char *p, *el = strtok(newpath, "/");
+
+            while(el) {
+                if(!strcmp("..", el)) {
+                    if((p = strrchr(abspath.name, '/')))
+                        *(p + (p == abspath.name ? 1 : 0)) = '\0';
+                } else if(*el && strcmp(el, ".")) {
+                    if(strlen(abspath.name) == 1)
+                        strcat(abspath.name, el);
+                    else
+                        strcat(strcat(abspath.name, "/"), el);
+                }
+                el = strtok(NULL, "/");
+            }
+
+            free(newpath);
+        } else
+            strcpy(abspath.name, path);
+    } else
+        abspath.len = 0;
+
+    return abspath.name ? (const char *)abspath.name : path;
 }
 
 static vfs_mount_t *get_mount (const char *path)
@@ -258,6 +319,24 @@ static const char *get_filename (vfs_mount_t *mount, const char *filename)
         return filename + (len == 1 ? 0 : len - 1);
     } else
         return filename;
+}
+
+static vfs_mount_t *mount_modifiable (const char *path, size_t op_fn)
+{
+    vfs_mount_t *mount = get_mount((path = parse_path(path)));
+
+    if(mount == NULL || mount->mode.hidden)
+        vfs_errno = EFAULT;
+    else if(mount->mode.read_only)
+        vfs_errno = EROFS;
+    else if(*((vfs_ptr *)((uint8_t *)mount->vfs + op_fn)) == NULL)
+        vfs_errno = EPERM;
+    else if(!strncmp(mount->path, path, strlen(path)))
+        vfs_errno = EISDIR;
+    else
+        vfs_errno = 0;
+
+    return vfs_errno ? NULL : mount;
 }
 
 vfs_file_t *vfs_open (const char *filename, const char *mode)
@@ -323,6 +402,13 @@ int vfs_seek (vfs_file_t *file, size_t offset)
     return ((vfs_t *)(file->fs))->fseek(file, offset);
 }
 
+int vfs_truncate (vfs_file_t *file, size_t offset)
+{
+    vfs_errno = ((vfs_t *)(file->fs))->ftruncate ? 0 : EPERM;
+
+    return vfs_errno ? -1 : ((vfs_t *)(file->fs))->ftruncate(file, offset);
+}
+
 bool vfs_eof (vfs_file_t *file)
 {
     vfs_errno = 0;
@@ -348,80 +434,86 @@ int vfs_rename (const char *from, const char *to)
 
 int vfs_unlink (const char *filename)
 {
-    int ret;
+    int ret = -1;
+    vfs_mount_t *mount; // TODO: test for dir?
 
-    vfs_mount_t *mount = get_mount(filename); // TODO: test for dir?
-
-    if((ret = mount ? mount->vfs->funlink(get_filename(mount, filename)) : -1) != -1 && vfs.on_fs_changed && !mount->mode.hidden)
-        vfs.on_fs_changed(mount->vfs);
+    if((mount = mount_modifiable(filename, offsetof(vfs_t, funlink)))) {
+        if((ret = mount->vfs->funlink(get_filename(mount, filename))) != -1 && vfs.on_fs_changed)
+            vfs.on_fs_changed(mount->vfs);
+    }
 
     return ret;
 }
 
 int vfs_mkdir (const char *path)
 {
-    int ret;
+    int ret = -1;
+    vfs_mount_t *mount;
 
-    vfs_mount_t *mount = get_mount(path);
-
-    if((ret = mount ? mount->vfs->fmkdir(get_filename(mount, path)) : -1) != -1 && vfs.on_fs_changed && !mount->mode.hidden)
-        vfs.on_fs_changed(mount->vfs);
+    if((mount = mount_modifiable(path, offsetof(vfs_t, fmkdir)))) {
+        if((ret = mount->vfs->fmkdir(get_filename(mount, path))) != -1 && vfs.on_fs_changed)
+            vfs.on_fs_changed(mount->vfs);
+    }
 
     return ret;
 }
 
 int vfs_rmdir (const char *path)
 {
-    int ret;
+    int ret = -1;
+    vfs_mount_t *mount;
 
-    vfs_mount_t *mount = get_mount(path);
+    if((mount = mount_modifiable(path, offsetof(vfs_t, frmdir)))) {
 
-    if((ret = mount ? mount->vfs->frmdir(get_filename(mount, path)) : -1) != -1 && vfs.on_fs_changed && !mount->mode.hidden)
-        vfs.on_fs_changed(mount->vfs);
+        vfs_stat_t st;
+
+        if(vfs_stat(path, &st) == 0 && !st.st_mode.directory)
+            vfs_errno = ENOTDIR;
+        else if((ret = mount->vfs->frmdir(get_filename(mount, path))) != -1 && vfs.on_fs_changed)
+            vfs.on_fs_changed(mount->vfs);
+    }
 
     return ret;
 }
 
 int vfs_chdir (const char *path)
 {
-    int ret;
-    char *p;
+    int ret = -1;
+    vfs_mount_t *mount;
 
     vfs_errno = 0;
+    path = parse_path(path);
 
-    if(!strcmp("..", path) && strcmp("/", (path = cwd)) && (p = strrchr(cwd, '/')))
-        *(p + (p == cwd ? 1 : 0)) = '\0';
-
-    if(*path != '/' && strcmp(cwd, "/")) {
-        if(strcmp(path, "..")) {
-            if(strlen(cwd) > 1)
-                strcat(cwd, "/");
-            strcat(cwd, path);
-        } else {
-            char *s = strrchr(cwd, '/');
-            if(s)
-                *s = '\0';
-        }
-    } else {
-
-        if(*path == '/')
-            strcpy(cwd, path);
-        else
-            strcat(strcpy(cwd, "/"), path);
-
-        vfs_fixpath(cwd);
-
-        if((cwdmount = get_mount(cwd)) && strchr(cwd + 1, '/') == NULL && cwdmount != &root) {
-
-            strcpy(cwd, cwdmount->path);
-            vfs_fixpath(cwd);
-
-            return 0;
+    if((mount = get_mount(path))) {
+        if(mount->vfs->fchdir)
+            ret = mount->vfs->fchdir(get_filename(mount, path));
+        else {
+            vfs_stat_t st;
+            if(!((ret = mount->vfs->fstat(get_filename(mount, path), &st)) == 0 && st.st_mode.directory))
+                ret = -1;
         }
     }
 
-    if((ret = cwdmount ? cwdmount->vfs->fchdir(path) : -1) != 0) // + strlen(mount->path));))
-        vfs_fixpath(cwd);
+    if(ret == 0) {
+        size_t cwdlen;
+        if((cwdlen = strlen(path)) > cwd.len) {
+            if(cwd.name == _cwd)
+                cwd.name = malloc(cwdlen + 1);
+            else
+                cwd.name = realloc(cwd.name, cwdlen + 1);
+            if(cwd.name)
+                cwd.len = cwdlen;
+            else {
+                cwd.name = _cwd;
+                cwd.len = sizeof(_cwd) - 1;
+                mount = &root;
+                path = root.path;
+                ret = -1;
+            }
+        }
+        strcpy(cwd.name, path);
+        cwdmount = mount;
+    }
 
     return ret;
 }
@@ -475,7 +567,7 @@ vfs_dirent_t *vfs_readdir (vfs_dir_t *dir)
 
         dirent.st_mode = ml->mount->mode;
         dirent.st_mode.directory = true;
-        dir->mounts = dir->mounts->next;
+        dir->mounts = ml->next;
         free(ml);
     }
 
@@ -488,7 +580,7 @@ void vfs_closedir (vfs_dir_t *dir)
 
     while(dir->mounts) {
         vfs_mount_ll_entry_t *ml = dir->mounts;
-        dir->mounts = dir->mounts->next;
+        dir->mounts = ml->next;
         free(ml);
     }
 
@@ -497,17 +589,22 @@ void vfs_closedir (vfs_dir_t *dir)
 
 char *vfs_getcwd (char *buf, size_t len)
 {
-    char *cwds = cwdmount->vfs->fgetcwd ? cwdmount->vfs->fgetcwd(NULL, len) : cwd;
+    char *cwds = cwdmount->vfs->fgetcwd ? cwdmount->vfs->fgetcwd(NULL, len) : cwd.name;
+    size_t cwdlen = strlen(cwdmount->path) + strlen(cwds) + 2;
 
     vfs_errno = 0;
 
-    if(buf == NULL)
-        buf = (char *)malloc(strlen(cwds) + 1);
+    if(buf == NULL) {
+        len = cwdlen + 1;
+        buf = (char *)malloc(cwdlen + 1);
+    }
 
-    if(buf)
-        strcpy(buf, cwds);
+    if(buf && cwdlen < len)
+        strcat(strcpy(buf, cwdmount->path), cwds + 1);
 
-    return buf ? buf : cwds;
+    vfs_fixpath(buf);
+
+    return cwdlen < len ? buf : NULL;
 }
 
 int vfs_chmod (const char *filename, vfs_st_mode_t attr, vfs_st_mode_t mask)
@@ -519,39 +616,11 @@ int vfs_chmod (const char *filename, vfs_st_mode_t attr, vfs_st_mode_t mask)
 
 int vfs_stat (const char *filename, vfs_stat_t *st)
 {
-    char tmp[VFS_CWD_LENGTH], *p;
-
-    if(!strcmp("..", filename)) {
-        strcpy(tmp, cwd);
-        if((p = strrchr(tmp, '/')))
-            *(p + (p == tmp ? 1 : 0)) = '\0';
-        filename = tmp;
-    }
+    filename = parse_path(filename);
 
     vfs_mount_t *mount = get_mount(filename);
 
-    int ret = mount ? mount->vfs->fstat(get_filename(mount, filename), st) : -1;
-
-    if(ret == -1 && (!strcmp("/", filename) || (strchr(filename, '/') == NULL && !strcmp("/", cwd)))) {
-
-        strcat(cwd, filename);
-        mount = get_mount(cwd);
-        cwd[1] = '\0';
-
-        if(mount) {
-            st->st_size = 0;
-            st->st_mode.mode = 0;
-            st->st_mode.directory = true;
-#if defined(ESP_PLATFORM)
-            st->st_mtim = mount->st_mtim;
-#else
-            st->st_mtime = mount->st_mtime;
-#endif
-            ret = 0;
-        }
-    }
-
-    return ret;
+    return mount ? mount->vfs->fstat(get_filename(mount, filename), st) : -1;
 }
 
 int vfs_utime (const char *filename, struct tm *modified)
@@ -577,21 +646,25 @@ static bool vfs_get_time (struct tm *time)
 {
     memset(time, 0, sizeof(struct tm));
 
- // 2025-01-01:00:00:00
-    time->tm_year = 2025 - 1900;
+ // 2026-01-01:00:00:00
+    time->tm_year = 2026 - 1900;
     time->tm_mday = 1;
 
     return true;
 }
 
-bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
+bool vfs_mount (const void *device, const char *path, const vfs_t *fs, vfs_st_mode_t mode)
 {
     vfs_mount_t *mount;
+
+    if((mount = path_is_mount_dir(path)) && mount->vfs != &fs_null)
+        return mount->vfs == fs;
 
     if(!strcmp(path, "/")) {
         root.vfs = fs;
         root.mode = mode;
-    } else if((mount = (vfs_mount_t *)calloc(sizeof(vfs_mount_t), 1))) {
+        root.device = device;
+    } else if((mount = (vfs_mount_t *)calloc(1, sizeof(vfs_mount_t)))) {
 
         struct tm tm;
 
@@ -602,6 +675,7 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
         mount->vfs = fs;
         mount->mode = mode;
         mount->next = NULL;
+        mount->device = device;
         if(hal.rtc.get_datetime && hal.rtc.get_datetime(&tm)) {
 #ifdef ESP_PLATFORM
             mount->st_mtim = mktime(&tm);
@@ -627,17 +701,24 @@ bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode)
     return fs != NULL;
 }
 
-bool vfs_unmount (const char *path)
+bool vfs_unmount (const void *device, const char *path)
 {
     // TODO: close open files?
 
     if(!strcmp(path, "/")) {
         root.vfs = &fs_null;
         root.mode = (vfs_st_mode_t){ .directory = true, .read_only = true, .hidden = true };
+        if(cwdmount == &root)
+            strcpy(cwd.name, "/");
     } else {
 
         vfs_mount_t *mount = get_mount(path);
         if(mount) {
+
+            if(mount == cwdmount) {
+                cwdmount = &root;
+                strcpy(cwd.name, "/");
+            }
 
             vfs_mount_t *pmount = &root;
 
@@ -660,10 +741,12 @@ bool vfs_unmount (const char *path)
 vfs_drive_t *vfs_get_drive (const char *path)
 {
     static vfs_drive_t drive;
+    static char mpath[VFS_MOUNT_PATH_LEN];
 
     vfs_mount_t *mount = get_mount(path);
+    strcpy(mpath, mount->path);
     drive.name = mount->vfs->fs_name;
-    drive.path = (const char *)mount->path;
+    drive.path = mpath;
     drive.mode = mount->mode;
     drive.removable = mount->vfs->removable;
     drive.fs = mount->vfs;
@@ -698,13 +781,15 @@ vfs_drives_t *vfs_drives_open (void)
 vfs_drive_t *vfs_drives_read (vfs_drives_t *handle, bool add_hidden)
 {
     static vfs_drive_t drive;
+    static char path[VFS_MOUNT_PATH_LEN];
 
     bool ok;
 
     if((ok = handle->mount != NULL)) {
 
+        strcpy(path, handle->mount->path);
         drive.name = handle->mount->vfs->fs_name;
-        drive.path = (const char *)handle->mount->path;
+        drive.path = path;
         drive.mode = handle->mount->mode;
         drive.removable = handle->mount->vfs->removable;
         drive.fs = handle->mount->vfs;
@@ -737,6 +822,31 @@ vfs_free_t *vfs_drive_getfree (vfs_drive_t *drive)
 int vfs_drive_format (vfs_drive_t *drive)
 {
     const vfs_t *fs = drive->fs;
+    vfs_mount_t *mount = path_is_mount_dir(drive->path);
 
-    return (vfs_errno = fs->format ? fs->format() : -1);
+    stream_await_tx_clear(&hal.stream);
+
+    if(mount && fs->format) {
+
+        int ferrno;
+
+        if(mount == cwdmount)
+            strcpy(cwd.name, "/");
+
+        if(vfs.on_unmount)
+            vfs.on_unmount(drive->path);
+
+        if((ferrno = fs->format()) == 0) {
+            if(fs->device_mount && !fs->device_mount(mount->device, true))
+                ferrno = -1;
+            if(ferrno == 0 && vfs.on_mount)
+                vfs.on_mount(drive->path, drive->fs, drive->mode);
+        }
+
+        if((vfs_errno = ferrno) && fs->device_mount)
+            fs->device_mount(mount->device, false); // dismount drive on error
+    } else
+        vfs_errno = -1;
+
+    return vfs_errno;
 }

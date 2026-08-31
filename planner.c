@@ -31,10 +31,6 @@
 #include "planner.h"
 #include "protocol.h"
 
-#ifndef ROTARY_FIX
-#define ROTARY_FIX 0
-#endif
-
 #if ENABLE_BACKLASH_COMPENSATION
 void mc_sync_backlash_position (void);
 #endif
@@ -227,7 +223,7 @@ uint_fast16_t plan_get_buffer_size (void)
     return block_buffer.size;
 }
 
-bool plan_reset (void)
+FLASHMEM bool plan_reset (void)
 {
     if(block_buffer.blocks == NULL) {
 
@@ -251,6 +247,9 @@ bool plan_reset (void)
         return false;
 
     memset(&pl, 0, sizeof(planner_t)); // Clear planner struct
+
+    pl.override.feed_rate = sys.override.feed_rate;
+    pl.override.rapid_rate = sys.override.rapid_rate;
 
     plan_reset_buffer(&block_buffer, block_buffer.blocks[0].next == NULL);
 
@@ -313,12 +312,12 @@ float plan_compute_profile_nominal_speed (plan_block_t *block)
                            : block->programmed_rate;
 
     if(block->condition.rapid_motion)
-        nominal_speed *= (0.01f * (float)sys.override.rapid_rate);
+        nominal_speed *= (0.01f * (float)pl.override.rapid_rate);
     else {
-        if(sys.override.feed_rate != 100 && !block->condition.no_feed_override) {
+        if(pl.override.feed_rate != 100 && !block->condition.no_feed_override) {
             if(nominal_speed > block->rapid_rate)
                 nominal_speed = block->rapid_rate;
-            nominal_speed *= (0.01f * (float)sys.override.feed_rate);
+            nominal_speed *= (0.01f * (float)pl.override.feed_rate);
         }
         if(nominal_speed > block->rapid_rate)
             nominal_speed = block->rapid_rate;
@@ -406,7 +405,7 @@ bool plan_buffer_line (float *target, plan_line_data_t *pl_data)
     int32_t target_steps[N_AXIS], position_steps[N_AXIS], delta_steps;
     uint_fast8_t idx;
     float unit_vec[N_AXIS];
-#if N_AXIS > 3 && ROTARY_FIX
+#if N_AXIS > 3
     axes_signals_t motion = {0};
 #endif
 
@@ -447,7 +446,7 @@ bool plan_buffer_line (float *target, plan_line_data_t *pl_data)
                 direction.bits |= bit(idx);
             else
                 direction.bits &= ~bit(idx);
-#if N_AXIS > 3  && ROTARY_FIX
+#if N_AXIS > 3
             motion.mask |= bit(idx);
 #endif
         } else {
@@ -486,41 +485,47 @@ bool plan_buffer_line (float *target, plan_line_data_t *pl_data)
         pl_data->output_commands = NULL; // Indicate commands are already queued for execution
     }
 
-#if N_AXIS > 3  && ROTARY_FIX
+#if N_AXIS > 3
 
     // NIST RS274 (2.1.2.5 A & 2.1.2.6) states that G94 linear motion with simultaneous angular motion
     // has the feedrate assigned to the linear axes. To accomplish this we'll change the planner block to
     // behave as if its doing a G93 inverse time mode move.
 
-    if(!block->condition.inverse_time &&
-        !block->condition.rapid_motion &&
-         (motion.mask & settings.steppers.is_rotary.mask) &&
-          (motion.mask & ~settings.steppers.is_rotary.mask)) {
+    if(settings.flags.rotary_fix_enable &&
+        !block->condition.inverse_time &&
+         !block->condition.rapid_motion &&
+          (motion.mask & settings.steppers.is_rotary.mask)) {
 
-        float linear_magnitude = 0.0f;
+        if(motion.mask & ~settings.steppers.is_rotary.mask) {
 
-        idx = 0;
-        motion.mask &= ~settings.steppers.is_rotary.mask;
+            float linear_magnitude = 0.0f;
 
-        while(motion.mask) {
-            if(motion.mask & 0x01)
-                linear_magnitude += unit_vec[idx] * unit_vec[idx];
-            motion.mask >>= 1;
-            idx++;
-        }
+            idx = 0;
+            motion.mask &= ~settings.steppers.is_rotary.mask;
 
-        pl_data->feed_rate = 1.0f / (sqrtf(linear_magnitude) / pl_data->feed_rate);
+            while(motion.mask) {
+                if(motion.mask & 0x01)
+                    linear_magnitude += unit_vec[idx] * unit_vec[idx];
+                motion.mask >>= 1;
+                idx++;
+            }
 
-        block->condition.inverse_time = On;
+            pl_data->feed_rate = 1.0f / (sqrtf(linear_magnitude) / pl_data->feed_rate);
+
+            block->condition.inverse_time = On;
+
+        } else if(gc_state.modal.units_imperial && settings.flags.revert_metric_conversion)
+            pl_data->feed_rate /= 25.4f;// Revert in/min to mm/min conversion for angular motion
     }
 
 #endif
 
     // Calculate the unit vector of the line move and the block maximum feed rate and acceleration scaled
     // down such that no individual axes maximum values are exceeded with respect to the line direction.
-#if N_AXIS > 3  && ROTARY_FIX
-    // NOTE: This calculation assumes all block motion axes are orthogonal (Cartesian), and if also rotational, then
-    // motion mode must be inverse time mode. Operates on the absolute value of the unit vector.
+#if N_AXIS > 3
+    // NOTE: This calculation assumes all block motion axes are orthogonal (Cartesian), and if also rotational
+    // and settings.flags.rotary_fix_enable, then motion mode must be inverse time mode.
+    // Operates on the absolute value of the unit vector.
 #else
     // NOTE: This calculation assumes all axes are orthogonal (Cartesian) and works with ABC-axes,
     // if they are also orthogonal/independent. Operates on the absolute value of the unit vector.
@@ -741,13 +746,29 @@ void plan_sync_velocity (void *block)
 }
 
 // Set feed overrides
-void plan_feed_override (override_t feed_override, override_t rapid_override)
+FLASHMEM static void _plan_feed_override (override_t feed_rate, override_t rapid_rate)
 {
-    bool feedrate_changed = false, rapidrate_changed = false;
+    bool feedrate_changed, rapidrate_changed = false;
 
-    if(sys.override.control.feed_rates_disable)
-        return;
+    if(((feedrate_changed = feed_rate != pl.override.feed_rate) || (rapidrate_changed = rapid_rate != pl.override.rapid_rate))) {
 
+        pl.override.feed_rate = feed_rate;
+        pl.override.rapid_rate = rapid_rate;
+
+        if(plan_update_velocity_profile_parameters())
+            plan_cycle_reinitialize();
+
+        if(grbl.on_override_changed) {
+            if(feedrate_changed)
+                grbl.on_override_changed(OverrideChanged_FeedRate);
+            if(rapidrate_changed)
+                grbl.on_override_changed(OverrideChanged_RapidRate);
+        }
+    }
+}
+
+FLASHMEM void plan_feed_override (override_t feed_override, override_t rapid_override)
+{
     if(feed_override == 0)
         feed_override = sys.override.feed_rate;
     else
@@ -758,27 +779,26 @@ void plan_feed_override (override_t feed_override, override_t rapid_override)
     else
         rapid_override = constrain(rapid_override, 5, 100);
 
-    if((feedrate_changed = feed_override != sys.override.feed_rate) ||
-         (rapidrate_changed = rapid_override != sys.override.rapid_rate)) {
+    if(feed_override != sys.override.feed_rate || rapid_override != sys.override.rapid_rate) {
+
         sys.override.feed_rate = feed_override;
         sys.override.rapid_rate = rapid_override;
+
         report_add_realtime(Report_Overrides); // Set to report change immediately
-        if(plan_update_velocity_profile_parameters())
-            plan_cycle_reinitialize();
-        if(grbl.on_override_changed) {
-            if(feedrate_changed)
-                grbl.on_override_changed(OverrideChanged_FeedRate);
-            if(rapidrate_changed)
-                grbl.on_override_changed(OverrideChanged_RapidRate);
-        }
     }
+
+    if(sys.override.control.feed_rates_disable)
+        _plan_feed_override(DEFAULT_FEED_OVERRIDE, DEFAULT_RAPID_OVERRIDE);
+    else
+        _plan_feed_override(sys.override.feed_rate, sys.override.rapid_rate);
 }
 
-void plan_data_init (plan_line_data_t *plan_data)
+FLASHMEM void plan_data_init (plan_line_data_t *plan_data)
 {
     memset(plan_data, 0, sizeof(plan_line_data_t));
     plan_data->offset_id = gc_state.offset_id;
     plan_data->spindle.hal = gc_spindle_get(-1)->hal;
+    plan_data->condition.no_feed_override = sys.override.control.feed_rates_disable;
     plan_data->condition.target_validated = plan_data->condition.target_valid = sys.soft_limits.mask == 0;
 #ifdef KINEMATICS_API
     plan_data->rate_multiplier = 1.0f;

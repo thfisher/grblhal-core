@@ -465,6 +465,8 @@ typedef enum {
     // 683 - 689 - reserved for Sienci
 
     Setting_SubroutineOptions = 700,
+    Setting_RotaryOptions = 701,
+    Setting_CutterCompOptions = 702,
 
     Setting_SpindlePWMOptions1 = 709,
 
@@ -608,7 +610,12 @@ typedef union {
                  keep_rapids_override_on_reset   :1,
                  keep_feed_override_on_reset     :1,
                  m98_prescan_enable              :1,
-         		 unassigned                      :8;
+                 rotary_fix_enable               :1,
+                 revert_metric_conversion        :1, // For rotary axes inch/min -> mm/min
+                 set_rpm_0_during_hold           :1,
+                 cc_lookahead_enable             :1, // For cutter compensation
+                 cc_chamfer_corner               :1, // For cutter compensation
+                 unassigned                      :3;
     };
 } settingflags_t;
 
@@ -1013,7 +1020,8 @@ typedef enum {
     Setting_IsLegacy,
     Setting_IsLegacyFn,
     Setting_IsExpanded,
-    Setting_IsExpandedFn
+    Setting_IsExpandedFn,
+    Setting_MaxType = Setting_IsExpandedFn
 } setting_type_t;
 
 typedef union {
@@ -1022,13 +1030,15 @@ typedef union {
 } setting_limit_t;
 
 typedef union {
-    uint8_t value;
+    uint16_t value;
     struct {
-        uint8_t reboot_required :1,
-                allow_null      :1,
-                subgroups       :1,
-                increment       :4,
-                hidden          :1; //!< Hide from reporting, allow setting
+        uint16_t reboot_required :1,
+                 allow_null      :1,
+                 subgroups       :1,
+                 increment       :4,
+                 hidden          :1, //!< Hide from reporting, allow setting
+                 reload_required :1,
+                 unused          :7;
     };
 } setting_detail_flags_t;
 
@@ -1056,8 +1066,9 @@ typedef struct {
 typedef union {
     uint8_t value;
     struct {
-        uint8_t spindle    :1,
-                unassigned :7;
+        uint8_t spindle          :1,
+                restore_defaults :1,
+                unassigned       :6;
     };
 } settings_changed_flags_t;
 
@@ -1106,9 +1117,6 @@ typedef setting_details_t *(*on_get_settings_ptr)(void);
 
 extern settings_t settings;
 
-// Clear settings chain (unlinks plugin/driver settings from core settings)
-void settings_clear (void);
-
 // Initialize the configuration subsystem (load settings from persistent storage)
 void settings_init();
 
@@ -1147,7 +1155,7 @@ bool settings_override_acceleration (uint8_t axis, float acceleration);
 bool settings_override_jerk (uint8_t axis, float jerk);
 #endif
 
-void settings_register (setting_details_t *details);
+bool settings_register (setting_details_t *details);
 setting_details_t *settings_get_details (void);
 bool settings_is_group_available (setting_group_t group);
 bool settings_iterator (const setting_detail_t *setting, setting_output_ptr callback, void *data);
@@ -1165,5 +1173,6 @@ bool setting_is_integer (const setting_detail_t *setting);
 void setting_remove_elements (setting_id_t id, uint32_t mask, bool trim);
 bool settings_add_spindle_type (const char *type);
 limit_signals_t settings_get_homing_source (void);
+driver_settings_save_ptr settings_claim_save (driver_settings_save_ptr save);
 
 #endif

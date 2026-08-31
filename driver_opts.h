@@ -5,7 +5,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2020-2025 Terje Io
+  Copyright (c) 2020-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -86,8 +86,8 @@
 #define N_GANGED (X_GANGED + Y_GANGED + Z_GANGED)
 #define N_AUTO_SQUARED (X_AUTO_SQUARE + Y_AUTO_SQUARE + Z_AUTO_SQUARE)
 #define N_ABC_MOTORS (N_ABC_AXIS + N_GANGED)
-#define GANGED_MAP (((Z_GANGED<<2)|(Y_GANGED<<1)|X_GANGED)<<N_AXIS)
-#define AUTO_SQUARED_MAP (((Z_AUTO_SQUARE<<2)|(Y_AUTO_SQUARE<<1)|X_AUTO_SQUARE)<<N_AXIS)
+#define GANGED_MAP (((Z_GANGED<<(X_GANGED+Y_GANGED))|(Y_GANGED<<X_GANGED)|X_GANGED)<<N_AXIS)
+#define AUTO_SQUARED_MAP (((Z_AUTO_SQUARE<<(X_GANGED+Y_GANGED))|(Y_AUTO_SQUARE<<X_GANGED)|X_AUTO_SQUARE)<<N_AXIS)
 
 #if N_AXIS > 3 || (AUTO_SQUARED_MAP & 8)
 #define M3_LIMIT_ENABLE 1
@@ -309,8 +309,19 @@
 #define SPINDLE_PWM         0b010
 #define SPINDLE_DIR         0b100
 
+#ifdef SPINDLE_ENABLE
+#undef SPINDLE0_ENABLE
+#undef SPINDLE1_ENABLE
+#undef SPINDLE2_ENABLE
+#undef SPINDLE3_ENABLE
+#endif
+
 #ifndef SPINDLE0_ENABLE
-#define SPINDLE0_ENABLE DEFAULT_SPINDLE
+#ifdef SPINDLE_ENABLE
+#define SPINDLE0_ENABLE     0
+#else
+#define SPINDLE0_ENABLE     DEFAULT_SPINDLE
+#endif
 #endif
 
 #ifndef SPINDLE1_ENABLE
@@ -333,16 +344,18 @@
 #define SPINDLE3_ENABLE     0
 #elif SPINDLE3_ENABLE == -1 || SPINDLE3_ENABLE == SPINDLE_ALL || SPINDLE3_ENABLE == SPINDLE_ALL_VFD
 #warning "SPINDLE3_ENABLE cannot be set to -1, SPINDLE_ALL or SPINDLE_ALL_VFD"
-#undef SPINDLE1_ENABLE
-#define SPINDLE1_ENABLE     0
+#undef SPINDLE3_ENABLE
+#define SPINDLE3_ENABLE     0
 #endif
 
+#ifndef SPINDLE_ENABLE
 #if SPINDLE0_ENABLE == -1 || SPINDLE0_ENABLE == SPINDLE_ALL
 #define SPINDLE_ENABLE (SPINDLE_ALL|(1<<SPINDLE1_ENABLE)|(1<<SPINDLE2_ENABLE)|(1<<SPINDLE3_ENABLE))
 #elif SPINDLE0_ENABLE == SPINDLE_ALL_VFD
 #define SPINDLE_ENABLE (SPINDLE_ALL_VFD|SPINDLE_ALL|(1<<SPINDLE1_ENABLE)|(1<<SPINDLE2_ENABLE)|(1<<SPINDLE3_ENABLE))
 #else
 #define SPINDLE_ENABLE ((1<<SPINDLE0_ENABLE)|(1<<SPINDLE1_ENABLE)|(1<<SPINDLE2_ENABLE)|(1<<SPINDLE3_ENABLE))
+#endif
 #endif
 
 // Driver spindle 0
@@ -450,12 +463,18 @@
 #endif
 #endif
 
+#ifndef ENCODER_ENABLE
+#define ENCODER_ENABLE      0
+#endif
+
 #ifndef QEI_ENABLE
+#if ENCODER_ENABLE
+#define QEI_ENABLE          1
+#else
 #define QEI_ENABLE          0
 #endif
-#ifndef QEI_SELECT_ENABLE
-#define QEI_SELECT_ENABLE   0
 #endif
+
 #ifndef ODOMETER_ENABLE
 #define ODOMETER_ENABLE     0
 #endif

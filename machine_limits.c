@@ -33,7 +33,7 @@
 #include "tool_change.h"
 #include "state_machine.h"
 #ifdef KINEMATICS_API
-#include "kinematics.h"
+#include "kinematics/interface.h"
 #endif
 
 #include "config.h"
@@ -113,7 +113,7 @@ ISR_CODE void ISR_FUNC(limit_interrupt_handler)(limit_signals_t state) // DEFAUL
 
 // Establish work envelope for homed axes, used by soft limits and jog limits handling.
 // When hard limits are enabled pulloff distance is subtracted to avoid triggering limit switches.
-void limits_set_work_envelope (void)
+FLASHMEM void limits_set_work_envelope (void)
 {
     uint_fast8_t idx = N_AXIS;
 
@@ -139,11 +139,9 @@ void limits_set_work_envelope (void)
     } while(idx);
 }
 
-#ifndef KINEMATICS_API
-
 // Set machine positions for homed limit switches. Don't update non-homed axes.
 // NOTE: settings.max_travel[] is stored as a negative value.
-void limits_set_machine_positions (axes_signals_t cycle, bool add_pulloff)
+FLASHMEM void limits_set_machine_positions (axes_signals_t cycle, bool add_pulloff)
 {
     uint_fast8_t idx = N_AXIS;
 
@@ -164,10 +162,8 @@ void limits_set_machine_positions (axes_signals_t cycle, bool add_pulloff)
     } while(idx);
 }
 
-#endif
-
 // Set, get homing pulloff
-coord_data_t *limits_homing_pulloff (coord_data_t *distance)
+FLASHMEM coord_data_t *limits_homing_pulloff (coord_data_t *distance)
 {
     if(distance)
         memcpy(&homing_pulloff, distance, sizeof(coord_data_t));
@@ -177,7 +173,7 @@ coord_data_t *limits_homing_pulloff (coord_data_t *distance)
 
 // Pulls off axes from asserted homing switches before homing starts.
 // For now only for auto squared axes.
-static bool limits_pull_off (axes_signals_t axis, coord_data_t *distance, float scaling)
+FLASHMEM static bool limits_pull_off (axes_signals_t axis, coord_data_t *distance, float scaling)
 {
     uint_fast8_t n_axis = 0, idx = N_AXIS;
     coord_data_t target = {0};
@@ -204,11 +200,12 @@ static bool limits_pull_off (axes_signals_t axis, coord_data_t *distance, float 
     plan_data.feed_rate = settings.axis[0].homing_seek_rate * sqrtf(n_axis); // Adjust so individual axes all move at pull-off rate.
     plan_data.condition.coolant = gc_state.modal.coolant;
 
+    // Bypass mc_line(). Directly plan homing motion.
 #ifdef KINEMATICS_API
     coord_data_t k_target;
-    plan_buffer_line(kinematics.transform_from_cartesian(k_target.values, target.values), &plan_data);    // Bypass mc_line(). Directly plan homing motion.;
+    plan_buffer_line(kinematics.transform_from_cartesian(&k_target, &target)->values, &plan_data);
 #else
-    plan_buffer_line(target.values, &plan_data);    // Bypass mc_line(). Directly plan homing motion.
+    plan_buffer_line(target.values, &plan_data);
 #endif
 
     sys.step_control.flags = 0;                 // Clear existing flags and
@@ -266,7 +263,7 @@ static bool limits_pull_off (axes_signals_t axis, coord_data_t *distance, float 
 // mask, which prevents the stepper algorithm from executing step pulses. Homing motions typically
 // circumvent the processes for executing motions in normal operation.
 // NOTE: Only the abort realtime command can interrupt this process.
-static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
+FLASHMEM static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 {
     if (ABORTED) // Block if system reset has been issued.
         return false;
@@ -275,12 +272,12 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
     uint_fast8_t n_cycle = (2 * settings.homing.locate_cycles + 1);
     uint_fast8_t step_pin[N_AXIS], n_active_axis, dual_motor_axis = 0;
     bool autosquare_check = false;
-    float max_travel = 0.0f, homing_rate;
+    float max_travel = 0.0f, homing_rate_sqr = 0.0f;
     homing_mode_t mode = HomingMode_Seek;
-    axes_signals_t axislock, homing_state;
+    axes_signals_t axislock, homing_state, homed = {0};
     home_signals_t signals_state;
     squaring_mode_t squaring_mode = SquaringMode_Both;
-    coord_data_t distance, target;
+    coord_data_t distance, target, homing_rate;
     plan_line_data_t plan_data;
     rt_exec_t rt_exec, rt_exec_states = EXEC_SAFETY_DOOR|EXEC_RESET|EXEC_CYCLE_COMPLETE;
 
@@ -311,6 +308,14 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 #endif
             distance.values[idx] = settings.axis[idx].max_travel * (-HOMING_AXIS_SEARCH_SCALAR);
 
+            if((homing_rate.values[idx] = hal.homing.get_feedrate((axes_signals_t){ .bits = bit(idx) }, mode)) == 0.0f)
+                return false;
+#ifdef KINEMATICS_API
+        if(kinematics.homing_cycle_get_feedrate)
+            homing_rate.values[idx] = kinematics.homing_cycle_get_feedrate((axes_signals_t){ .bits = bit(idx) }, homing_rate.values[idx], mode);
+#endif
+
+            homing_rate_sqr += homing_rate.values[idx] * homing_rate.values[idx];
             max_travel = max(max_travel, distance.values[idx]);
 
             if(bit_istrue(auto_square.mask, bit(idx)))
@@ -320,9 +325,6 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 
     if(max_travel == 0.0f)
         return true;
-
-    if((homing_rate = hal.homing.get_feedrate(cycle, HomingMode_Seek)) == 0.0f)
-        return false;
 
     if(auto_square.mask) {
         float fail_distance = (-settings.homing.dual_axis.fail_length_percent / 100.0f) * settings.axis[dual_motor_axis].max_travel;
@@ -338,6 +340,7 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
     do {
 
         // Initialize and declare variables needed for homing routine.
+        float cycle_time = 0.0f;
         system_convert_array_steps_to_mpos(target.values, sys.position);
         axislock = (axes_signals_t){0};
         n_active_axis = 0;
@@ -345,7 +348,7 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
         idx = N_AXIS;
         do {
             // Set target location for active axes and setup computation for homing rate.
-            if (bit_istrue(cycle.mask, bit(--idx))) {
+            if(bit_istrue(cycle.mask, bit(--idx))) {
                 n_active_axis++;
 
 #ifdef KINEMATICS_API
@@ -354,33 +357,36 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
                 sys.position[idx] = 0;
 #endif
                 // Set target direction based on cycle mask and homing cycle approach state.
-                if (bit_istrue(settings.homing.dir_mask.value, bit(idx)))
+                if(bit_istrue(settings.homing.dir_mask.value, bit(idx)))
                     target.values[idx] = mode == HomingMode_Pulloff ? distance.values[idx] : - distance.values[idx];
                 else
                     target.values[idx] = mode == HomingMode_Pulloff ? - distance.values[idx] : distance.values[idx];
+
+                cycle_time = max(cycle_time, fabsf(target.values[idx]) / homing_rate.values[idx]);
 
                 // Apply axislock to the step port pins active in this cycle.
                 axislock.mask |= step_pin[idx];
             }
         } while(idx);
 
-#ifdef KINEMATICS_API
-        if(kinematics.homing_cycle_get_feedrate)
-            homing_rate = kinematics.homing_cycle_get_feedrate(cycle, homing_rate, mode);
-#endif
-
         if(grbl.on_homing_rate_set)
-            grbl.on_homing_rate_set(cycle, homing_rate, mode);
+            grbl.on_homing_rate_set(cycle, &homing_rate, mode);
 
-        homing_rate *= sqrtf(n_active_axis); // [sqrt(N_AXIS)] Adjust so individual axes all move at homing rate.
+        idx = N_AXIS;
+        if(mode != HomingMode_Pulloff) do {
+            if(bit_istrue(cycle.mask, bit(--idx))) {
+                float distance = homing_rate.values[idx] * cycle_time;
+                target.values[idx] = target.values[idx] >= 0.0f ? distance : -distance;
+            }
+        } while(idx);
 
         // Perform homing cycle. Planner buffer should be empty, as required to initiate the homing cycle.
-        plan_data.feed_rate = homing_rate;      // Set current homing rate.
+        plan_data.feed_rate = sqrtf(homing_rate_sqr);
         sys.homing_axis_lock.mask = axislock.mask;
 
 #ifdef KINEMATICS_API
         coord_data_t k_target;
-        plan_buffer_line(kinematics.transform_from_cartesian(k_target.values, target.values), &plan_data);    // Bypass mc_line(). Directly plan homing motion.;
+        plan_buffer_line(kinematics.transform_from_cartesian(&k_target, &target)->values, &plan_data);    // Bypass mc_line(). Directly plan homing motion.;
 #else
         plan_buffer_line(target.values, &plan_data);    // Bypass mc_line(). Directly plan homing motion.
 #endif
@@ -392,10 +398,10 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 
         do {
 
-            if (mode != HomingMode_Pulloff) {
+            if(mode != HomingMode_Pulloff) {
 
                 // Check homing switches state. Lock out cycle axes when they change.
-                homing_state = homing_signals_select(signals_state = hal.homing.get_state(), auto_square, squaring_mode);
+                homing_state = homing_signals_select((signals_state = hal.homing.get_state()), auto_square, squaring_mode);
 
                 // Auto squaring check
                 if((homing_state.mask & auto_square.mask) && squaring_mode == SquaringMode_Both) {
@@ -410,7 +416,7 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
                 idx = N_AXIS;
                 do {
                     idx--;
-                    if ((axislock.mask & step_pin[idx]) && (homing_state.mask & bit(idx))) {
+                    if((axislock.mask & step_pin[idx]) && (homing_state.mask & bit(idx))) {
 #ifdef KINEMATICS_API
                         axislock.mask &= ~kinematics.limits_get_axis_mask(idx);
 #else
@@ -423,7 +429,7 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 
                 sys.homing_axis_lock.mask = axislock.mask;
 
-                if (autosquare_check && abs(initial_trigger_position - sys.position[dual_motor_axis]) > autosquare_fail_distance) {
+                if(autosquare_check && labs(initial_trigger_position - sys.position[dual_motor_axis]) > autosquare_fail_distance) {
                     system_set_exec_alarm(Alarm_HomingFailAutoSquaringApproach);
                     mc_reset();
                     protocol_execute_realtime();
@@ -473,14 +479,16 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
 
             grbl.on_execute_realtime(STATE_HOMING);
 
-        } while (axislock.mask & AXES_BITMASK);
+        } while(axislock.mask & AXES_BITMASK);
 
         st_reset(); // Immediately force kill steppers and reset step segment buffer.
         hal.delay_ms(settings.homing.debounce_delay, NULL); // Delay to allow transient dynamics to dissipate.
 
+        homed.mask = cycle.mask;
+        homing_rate_sqr = 0.0f;
+
         // Reverse direction and reset homing rate for cycle(s).
         mode = mode == HomingMode_Pulloff ? HomingMode_Locate : HomingMode_Pulloff;
-        homing_rate = hal.homing.get_feedrate(cycle, mode);
 
         // After first cycle, homing enters locating phase. Shorten search to pull-off distance.
         idx = N_AXIS;
@@ -488,8 +496,16 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
             // Only one initial pass for auto squared axis when both motors are active
             //if(mode == SquaringMode_Both && auto_square.mask)
             //    cycle.mask &= ~auto_square.mask;
-            if(bit_istrue(cycle.mask, bit(--idx)))
+            if(bit_istrue(cycle.mask, bit(--idx))) {
                 distance.values[idx] = homing_pulloff.values[idx] * (mode == HomingMode_Locate ? HOMING_AXIS_LOCATE_SCALAR : 1.0f);
+                if((homing_rate.values[idx] = hal.homing.get_feedrate((axes_signals_t){ .bits = bit(idx) }, mode)) == 0.0f)
+                    bit_false(cycle.mask, bit(idx));
+#ifdef KINEMATICS_API
+                else if(kinematics.homing_cycle_get_feedrate)
+                    homing_rate.values[idx] = kinematics.homing_cycle_get_feedrate((axes_signals_t){ .bits = bit(idx) }, homing_rate.values[idx], mode);
+#endif
+                homing_rate_sqr += homing_rate.values[idx] * homing_rate.values[idx];
+            }
         } while(idx);
 
         if(auto_square.mask) {
@@ -498,12 +514,15 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
             hal.stepper.disable_motors((axes_signals_t){0}, SquaringMode_Both);
         }
 
-    } while (homing_rate > 0.0f && cycle.mask && n_cycle-- > 0);
+    } while(homing_rate_sqr > 0.0f && cycle.mask && n_cycle-- > 0);
 
     // Pull off B motor to compensate for switch inaccuracy when configured.
     if(auto_square.mask && settings.axis[dual_motor_axis].dual_axis_offset != 0.0f) {
         hal.stepper.disable_motors(auto_square, settings.axis[dual_motor_axis].dual_axis_offset < 0.0f ? SquaringMode_B : SquaringMode_A);
         distance.values[dual_motor_axis] = fabs(settings.axis[dual_motor_axis].dual_axis_offset);
+#if defined(ASYMMETRIC_GANGING) || defined(ASYMMETRIC_AUTO_SQUARE)
+        auto_square.mask |= (1 << (N_AXIS - 1));
+#endif
         if(!limits_pull_off(auto_square, &distance, 1.0f))
             return false;
         hal.stepper.disable_motors((axes_signals_t){0}, SquaringMode_Both);
@@ -525,14 +544,14 @@ static bool homing_cycle (axes_signals_t cycle, axes_signals_t auto_square)
     mc_backlash_init(cycle);
 #endif
     sys.step_control.flags = 0; // Return step control to normal operation.
-    sys.homed.mask |= cycle.mask;
+    sys.homed.mask |= homed.mask;
 
     return true;
 }
 
 // Perform homing cycle(s) according to configuration.
 // NOTE: only one auto squared axis can be homed at a time.
-status_code_t limits_go_home (axes_signals_t cycle)
+FLASHMEM status_code_t limits_go_home (axes_signals_t cycle)
 {
     axes_signals_t auto_square = {0}, auto_squared = {0};
 
@@ -596,6 +615,8 @@ status_code_t limits_go_home (axes_signals_t cycle)
 
         if((auto_squared.mask & homing_signals_select(hal.homing.get_state(), (axes_signals_t){0}, SquaringMode_Both).mask) && !limits_pull_off(auto_square, &homing_pulloff, HOMING_AXIS_LOCATE_SCALAR))
             return Status_LimitsEngaged; // Auto squaring with limit switch asserted is not allowed.
+
+        hal.stepper.disable_motors((axes_signals_t){0}, SquaringMode_Both);
     }
 
     return grbl.home_machine(cycle, auto_square) ? Status_OK : Status_Unhandled;
@@ -604,9 +625,9 @@ status_code_t limits_go_home (axes_signals_t cycle)
 // Performs a soft limit check. Called from mc_line() only. Assumes the machine has been homed,
 // the workspace volume is in all negative space, and the system is in normal operation.
 // NOTE: Also used by jogging to block travel outside soft-limit volume.
-void limits_soft_check (float *target, planner_cond_t condition)
+FLASHMEM void limits_soft_check (float *target, planner_cond_t condition)
 {
-#ifdef KINEMATICS_API
+#if defined(KINEMATICS_API) && !(defined(ASYMMETRIC_GANGING) || defined(ASYMMETRIC_AUTO_SQUARE))
     if(condition.target_validated ? !condition.target_valid : !grbl.check_travel_limits(target, sys.soft_limits, false, &sys.work_envelope)) {
 #else
     if(condition.target_validated ? !condition.target_valid : !grbl.check_travel_limits(target, sys.soft_limits, true, &sys.work_envelope)) {
@@ -630,7 +651,7 @@ void limits_soft_check (float *target, planner_cond_t condition)
 }
 
 // Set axes to be homed from settings.
-void limits_set_homing_axes (void)
+FLASHMEM void limits_set_homing_axes (void)
 {
     uint_fast8_t idx = N_AXIS;
 
@@ -644,7 +665,7 @@ void limits_set_homing_axes (void)
 }
 
 // Check if homing is required.
-bool limits_homing_required (void)
+FLASHMEM bool limits_homing_required (void)
 {
     return settings.homing.flags.enabled && settings.homing.flags.init_lock &&
             (sys.cold_start || !settings.homing.flags.override_locks) &&
@@ -652,7 +673,7 @@ bool limits_homing_required (void)
 }
 
 // Get homing rate from the first axis in the cycle.
-static float get_homing_rate (axes_signals_t cycle, homing_mode_t mode)
+FLASHMEM static float get_homing_rate (axes_signals_t cycle, homing_mode_t mode)
 {
     uint_fast8_t idx = 0;
 
@@ -845,7 +866,7 @@ static void apply_travel_limits (float *target, float *position, work_envelope_t
     } while(idx);
 }
 
-void limits_init (void)
+FLASHMEM void limits_init (void)
 {
     hal.homing.get_feedrate = get_homing_rate;
     grbl.check_travel_limits = check_travel_limits;

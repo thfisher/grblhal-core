@@ -5,7 +5,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2024-2025 Terje Io
+  Copyright (c) 2024-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -33,6 +33,8 @@
 
 #if (DRIVER_SPINDLE_ENABLE & SPINDLE_DIR) && !defined(SPINDLE_DIRECTION_PIN)
 #warning "Selected spindle is not fully supported - no direction output!"
+#undef DRIVER_SPINDLE_ENABLE
+#define DRIVER_SPINDLE_ENABLE (defined(SPINDLE_ENABLE_PIN)|(defined(SPINDLE_PWM_PIN)<<1))
 #endif
 
 #if (DRIVER_SPINDLE_ENABLE & SPINDLE_PWM) && !defined(SPINDLE_PWM_PIN)
@@ -41,6 +43,16 @@
 
 #if (DRIVER_SPINDLE1_ENABLE & SPINDLE_PWM) && !defined(SPINDLE1_PWM_PIN)
 #warning "Selected spindle 1 is not supported!"
+#endif
+
+#if (DRIVER_SPINDLE1_ENABLE & SPINDLE_DIR) && !defined(SPINDLE1_DIRECTION_PIN)
+#warning "Selected spindle is not fully supported - no direction output!"
+#undef DRIVER_SPINDLE1_ENABLE
+#define DRIVER_SPINDLE1_ENABLE (defined(SPINDLE1_ENABLE_PIN)|(defined(SPINDLE1_PWM_PIN)<<1))
+#endif
+
+#if ENCODER_ENABLE > 0 && !(defined(QEI_A_PIN) && defined(QEI_B_PIN))
+#warning "ENCODER_ENABLE requires encoder input pins A and B to be defined!"
 #endif
 
 #endif
@@ -178,6 +190,62 @@
 #endif
 #endif // DIRECTION_PORT
 
+#ifdef MOTOR_FAULT_PORT
+
+#if defined(X_MOTOR_FAULT_PIN) && !defined(X_MOTOR_FAULT_PORT)
+#define X_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(Y_MOTOR_FAULT_PIN) && !defined(Y_MOTOR_FAULT_PORT)
+#define Y_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(Z_MOTOR_FAULT_PIN) && !defined(Z_MOTOR_FAULT_PORT)
+#define Z_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(M3_MOTOR_FAULT_PIN) && !defined(M3_MOTOR_FAULT_PORT)
+#define M3_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(M4_MOTOR_FAULT_PIN) && !defined(M4_MOTOR_FAULT_PORT)
+#define M4_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(M5_MOTOR_FAULT_PIN) && !defined(M5_MOTOR_FAULT_PORT)
+#define M5_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(M6_MOTOR_FAULT_PIN) && !defined(M6_MOTOR_FAULT_PORT)
+#define M6_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+#if defined(M7_MOTOR_FAULT_PIN) && !defined(M7_MOTOR_FAULT_PORT)
+#define M7_MOTOR_FAULT_PORT MOTOR_FAULT_PORT
+#endif
+
+#elif defined(ESP_PLATFORM) || defined(RP2040) || defined(__IMXRT1062__)
+
+#if defined(X_MOTOR_FAULT_PIN) && !defined(X_MOTOR_FAULT_PORT)
+#define X_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(Y_MOTOR_FAULT_PIN) && !defined(Y_MOTOR_FAULT_PORT)
+#define Y_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(Z_MOTOR_FAULT_PIN) && !defined(Z_MOTOR_FAULT_PORT)
+#define Z_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(M3_MOTOR_FAULT_PIN) && !defined(M3_MOTOR_FAULT_PORT)
+#define M3_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(M4_MOTOR_FAULT_PIN) && !defined(M4_MOTOR_FAULT_PORT)
+#define M4_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(M5_MOTOR_FAULT_PIN) && !defined(M5_MOTOR_FAULT_PORT)
+#define M5_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(M6_MOTOR_FAULT_PIN) && !defined(M6_MOTOR_FAULT_PORT)
+#define M6_MOTOR_FAULT_PORT NULL
+#endif
+#if defined(M7_MOTOR_FAULT_PIN) && !defined(M7_MOTOR_FAULT_PORT)
+#define M7_MOTOR_FAULT_PORT NULL
+#endif
+
+#endif // MOTOR_FAULT_PORTS
+
 #ifdef SPINDLE_PORT
 #ifndef SPINDLE_ENABLE_PORT
 #define SPINDLE_ENABLE_PORT SPINDLE_PORT
@@ -256,6 +324,10 @@
 #undef MPG_STREAM
 #define MPG_STREAM (MODBUS_RTU_STREAM + 1)
 #endif
+#endif
+
+#if defined(MPG_STREAM) && MPG_STREAM == 0 && (MODBUS_ENABLE & MODBUS_RTU_ENABLED) && !defined(MODBUS_RTU_STREAM)
+#define MODBUS_RTU_STREAM (MPG_STREAM + 1)
 #endif
 
 #if MPG_ENABLE && MPG_ENABLE != 2 && MPG_STREAM == 20 && BLUETOOTH_ENABLE != 1

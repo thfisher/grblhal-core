@@ -33,6 +33,8 @@
 #include <string.h>
 #include <time.h>
 
+#define VFS_MOUNT_PATH_LEN 33
+
 #define vfs_load_plugin(x)
 
 #ifndef bcopy
@@ -54,6 +56,12 @@ struct tm {
   int tm_sec;
 };
 #endif // __time_t_defined
+
+typedef struct
+{
+    char *name;
+    size_t len;
+} vfs_path_t;
 
 typedef union
 {
@@ -119,6 +127,7 @@ typedef size_t (*vfs_write_ptr)(const void *buffer, size_t size, size_t count, v
 typedef void (*vfs_close_ptr)(vfs_file_t *file);
 typedef size_t (*vfs_ftell_ptr)(vfs_file_t *file);
 typedef int (*vfs_fseek_ptr)(vfs_file_t *file, size_t offset);
+typedef int (*vfs_ftruncate_ptr)(vfs_file_t *file, size_t length);
 typedef bool (*vfs_eof_ptr)(vfs_file_t *file);
 typedef int (*vfs_rename_ptr)(const char *from, const char *to);
 typedef int (*vfs_unlink_ptr)(const char *filename);
@@ -135,6 +144,7 @@ typedef int (*vfs_utime_ptr)(const char *filename, struct tm *modified);
 
 typedef bool (*vfs_getfree_ptr)(vfs_free_t *free);
 typedef int (*vfs_format_ptr)(void);
+typedef bool (*vfs_device_mount_ptr)(const void *dev, bool mount);
 
 typedef struct
 {
@@ -146,6 +156,7 @@ typedef struct
     vfs_write_ptr fwrite;
     vfs_ftell_ptr ftell;
     vfs_fseek_ptr fseek;
+    vfs_ftruncate_ptr ftruncate;
     vfs_eof_ptr feof;
     vfs_rename_ptr frename;
     vfs_unlink_ptr funlink;
@@ -161,6 +172,7 @@ typedef struct
     vfs_getcwd_ptr fgetcwd;
     vfs_getfree_ptr fgetfree;
     vfs_format_ptr format;
+    vfs_device_mount_ptr device_mount;
 } vfs_t;
 
 typedef void (*on_vfs_changed_ptr)(const vfs_t *fs);
@@ -175,7 +187,8 @@ typedef struct {
 
 typedef struct vfs_mount
 {
-    char path[64];
+    char path[VFS_MOUNT_PATH_LEN];
+    const void *device;
     const vfs_t *vfs;
     vfs_st_mode_t mode;
 #ifdef ESP_PLATFORM // some versions of ESP-IDF/Compiler combos are fcked up
@@ -198,7 +211,7 @@ typedef struct {
 
 typedef struct {
     const char *name;
-    const char *path;
+    char *path;
     bool removable;
     vfs_st_mode_t mode;
     const void *fs;
@@ -215,8 +228,8 @@ extern vfs_events_t vfs;
 
 char *vfs_fixpath (char *path);
 
-bool vfs_mount (const char *path, const vfs_t *fs, vfs_st_mode_t mode);
-bool vfs_unmount (const char *path);
+bool vfs_mount (const void *device, const char *path, const vfs_t *fs, vfs_st_mode_t mode);
+bool vfs_unmount (const void *device, const char *path);
 vfs_file_t *vfs_open (const char *filename, const char *mode);
 void vfs_close (vfs_file_t *file);
 size_t vfs_read (void *buffer, size_t size, size_t count, vfs_file_t *file);
@@ -224,6 +237,7 @@ size_t vfs_write (const void *buffer, size_t size, size_t count, vfs_file_t *fil
 int vfs_puts (const char *s, vfs_file_t *file);
 size_t vfs_tell (vfs_file_t *file);
 int vfs_seek (vfs_file_t *file, size_t offset);
+int vfs_truncate (vfs_file_t *file, size_t length);
 bool vfs_eof (vfs_file_t *file);
 int vfs_rename (const char *from, const char *to);
 int vfs_unlink (const char *filename);

@@ -125,15 +125,6 @@ generate a solution.
 
 //#define KINEMATICS_API // Uncomment to add HAL entry points for custom kinematics
 
-/*! \def MASLOW_ROUTER
-\brief Enable Maslow router kinematics.
-Experimental - testing required and homing needs to be worked out.
-*/
-#if !defined MASLOW_ROUTER || defined __DOXYGEN__
-// Enable Maslow router kinematics.
-// Experimental - testing required and homing needs to be worked out.
-#define MASLOW_ROUTER Off
-#endif
 
 /*! \def WALL_PLOTTER
 \brief Enable wall plotter kinematics.
@@ -164,6 +155,14 @@ Experimental - testing required and homing needs to be worked out.
 #define POLAR_ROBOT Off
 #endif
 
+/*! \def RTCP_AC
+\brief Enable RTCP AC kinematics.
+Experimental - verification required. Needs XYZAC axes configured.
+*/
+#if !defined RTCP_AC || defined __DOXYGEN__
+#define RTCP_AC Off
+#endif
+
 
 /*! \def COREXY
 \brief Enable CoreXY kinematics. Use ONLY with CoreXY machines.
@@ -177,6 +176,18 @@ have the same steps per mm internally.
 #if !defined COREXY || defined __DOXYGEN__
 #define COREXY Off
 #endif
+
+/*! \def ASYMMETRIC_GANGING
+\brief Enable asymmetric ganging for X, Y or Z axis.
+<br> To be used when the screw pitch is not equal. The highest numbered axis is claimed for the second motor.
+*/
+//#define ASYMMETRIC_GANGING Y_AXIS	// Uncomment to enable
+
+/*! \def ASYMMETRIC_AUTO_SQUARE
+\brief Enable asymmetric ganging + auto squaring for X, Y or Z axis.
+<br> To be used when the screw pitch is not equal. The highest numbered axis is claimed for the second motor.
+*/
+//#define ASYMMETRIC_AUTO_SQUARE Y_AXIS	// Uncomment to enable
 
 /*! \def CHECK_MODE_DELAY
 \brief
@@ -213,6 +224,10 @@ or EMI triggering the related interrupt falsely or too many times.
 
 #if !defined ENABLE_JERK_ACCELERATION || defined __DOXYGEN__
 #define ENABLE_JERK_ACCELERATION Off // Enable to use 3rd order acceleration calculations. May need more processing power, a FPU will help.
+#endif
+
+#if !defined CUTTER_COMP_ENABLE || defined __DOXYGEN__
+#define CUTTER_COMP_ENABLE Off
 #endif
 
 // -
@@ -554,7 +569,7 @@ Set to \ref On or 1 to enable experimental support for expressions.
 Some LinuxCNC extensions are supported, conditionals and subroutines are not.
 */
 #if !defined NGC_EXPRESSIONS_ENABLE || defined __DOXYGEN__
-#define NGC_EXPRESSIONS_ENABLE On
+#define NGC_EXPRESSIONS_ENABLE Off
 #endif
 
 /*! \def NGC_PARAMETERS_ENABLE
@@ -1133,6 +1148,9 @@ Useful for some pre-built electronic boards.
 #if !defined DEFAULT_PWM_SPINDLE_ENABLE_RAMP || defined __DOXYGEN__
 #define DEFAULT_PWM_SPINDLE_ENABLE_RAMP Off
 #endif
+#if !defined DEFAULT_PWM_SPINDLE_IGNORE_DELAYS || defined __DOXYGEN__
+#define DEFAULT_PWM_SPINDLE_IGNORE_DELAYS Off
+#endif
 ///@}
 
 /*! @name $16 - Setting_SpindleInvertMask
@@ -1340,6 +1358,23 @@ Defines the parameters for the fourth entry in the spindle RPM linearization tab
 
 // Settings for second PWM spindle
 
+/*! @name $709 - Setting_SpindlePWMOptions1
+*/
+///@{
+#if !defined DEFAULT_PWM_SPINDLE1_ENABLE_OFF_WITH_ZERO_SPEED || defined __DOXYGEN__
+#define DEFAULT_PWM_SPINDLE1_ENABLE_OFF_WITH_ZERO_SPEED Off
+#endif
+#if !defined DEFAULT_PWM_SPINDLE1_DISABLE_LASER_MODE || defined __DOXYGEN__
+#define DEFAULT_PWM_SPINDLE1_DISABLE_LASER_MODE Off
+#endif
+#if !defined DEFAULT_PWM_SPINDLE1_ENABLE_RAMP || defined __DOXYGEN__
+#define DEFAULT_PWM_SPINDLE1_ENABLE_RAMP Off
+#endif
+#if !defined DEFAULT_PWM_SPINDLE1_IGNORE_DELAYS || defined __DOXYGEN__
+#define DEFAULT_PWM_SPINDLE1_IGNORE_DELAYS Off
+#endif
+///@}
+
 /*! @name $716 - Setting_SpindleInvertMask1
 Inverts the selected spindle output signals from active high to active low. Useful for some pre-built electronic boards.
 */
@@ -1476,6 +1511,20 @@ and less range over the total 255 PWM levels to signal different spindle speeds.
 ///@{
 #if !defined DEFAULT_PERSIST_TOOL || defined __DOXYGEN__
 #define DEFAULT_PERSIST_TOOL Off
+#endif
+///@}
+
+/*! @name $675 - Setting_MacroATC_Options
+*/
+///@{
+#if !defined DEFAULT_MACRO_ATC_OPTION_EXECUTEM6T0 || defined __DOXYGEN__
+#define DEFAULT_MACRO_ATC_OPTION_EXECUTEM6T0 Off
+#endif
+#if !defined DEFAULT_MACRO_ATC_ERROR_NO_MACRO || defined __DOXYGEN__
+#define DEFAULT_MACRO_ATC_ERROR_NO_MACRO Off
+#endif
+#if !defined DEFAULT_MACRO_ATC_RANDOM_TOOLCHANGER || defined __DOXYGEN__
+#define DEFAULT_MACRO_ATC_RANDOM_TOOLCHANGER Off
 #endif
 ///@}
 
@@ -2040,6 +2089,15 @@ For the controller the distance is unitless and and can be in degrees, radians, 
 #endif
 ///@}
 
+/*! @name $701 - Setting_RotaryOptions
+When enabled feed rate for combined rotary and linear motion is converted to inverse time mode..
+*/
+///@{
+#if !defined DEFAULT_ROTARY_FIX_ENABLE || defined __DOXYGEN__
+#define DEFAULT_ROTARY_FIX_ENABLE Off
+#endif
+///@}
+
 /*! @name $680 - Setting_StepperEnableDelay
 Allowed range 0 - 250 milliseconds. Driver adds ~2 milliseconds.
 */
@@ -2185,12 +2243,12 @@ Filing systems options.
 #define DEFAULT_FS_SD_AUTOMOUNT Off // Default disabled. Set to \ref On or 1 to enable.
 #endif
 
-/*! /def DEFAULT_FS_LITLLEFS_HIDDEN
+/*! /def DEFAULT_FS_LITTLEFS_HIDDEN
 \brief Hides LittleFS mount from directory listings.
 \internal Bit 1 in settings.fs_options.mask.
 */
-#if !defined DEFAULT_FS_LITLLEFS_HIDDEN || defined __DOXYGEN__
-#define DEFAULT_FS_LITLLEFS_HIDDEN Off // Default disabled. Set to \ref On or 1 to enable.
+#if !defined DEFAULT_FS_LITTLEFS_HIDDEN || defined __DOXYGEN__
+#define DEFAULT_FS_LITTLEFS_HIDDEN Off // Default disabled. Set to \ref On or 1 to enable.
 #endif
 
 /*! /def DEFAULT_FS_HIERACHICAL_LISTING
@@ -2202,7 +2260,6 @@ Adds directory entries in $F and $F+ output to allow hierarchical navigation of 
 #define DEFAULT_FS_HIERACHICAL_LISTING Off // Default disabled. Set to \ref On or 1 to enable.
 #endif
 ///@}
-
 
 // Axis settings (Group_XAxis - Group_VAxis)
 

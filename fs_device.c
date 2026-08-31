@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2025 Terje Io
+  Copyright (c) 2025-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -43,7 +43,7 @@ bool device_fs_add_stream (io_stream_properties_t *stream)
     if(!stream->flags.claimable || !stream->flags.modbus_ready)
         return false;
 
-    fs_device_t *add = calloc(sizeof(fs_device_t), 1);
+    fs_device_t *add = calloc(1, sizeof(fs_device_t));
     if(add) {
 
         switch(stream->type) {
@@ -119,7 +119,7 @@ static vfs_file_t *fs_open (const char *filename, const char *mode)
 
         device->io_stream.state.passthru = On; // flag open
 
-        if((file = calloc(sizeof(vfs_file_t) + sizeof(io_stream_t *), 1))) {
+        if((file = calloc(1, sizeof(vfs_file_t) + sizeof(io_stream_t *)))) {
             io_stream = &device->io_stream;
 #ifdef __GNUC__
 #pragma GCC diagnostic push
@@ -202,7 +202,8 @@ static int fs_stat (const char *filename, vfs_stat_t *st)
 
 void fs_device_mount (void)
 {
-    static const vfs_t fs = {
+    PROGMEM static const vfs_t fs = {
+        .fs_name = "device",
         .fopen = fs_open,
         .fclose = fs_close,
         .fread = fs_read,
@@ -220,5 +221,5 @@ void fs_device_mount (void)
     static bool ok = false;
 
     if(!ok)
-        ok = vfs_mount("/dev", &fs, (vfs_st_mode_t){ .directory = true, .hidden = true });
+        ok = vfs_mount(NULL, "/dev", &fs, (vfs_st_mode_t){ .directory = true, .hidden = true });
 }

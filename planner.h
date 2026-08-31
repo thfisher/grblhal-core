@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2019-2025 Terje Io
+  Copyright (c) 2019-2026 Terje Io
   Copyright (c) 2011-2016 Sungeun K. Jeon for Gnea Research LLC
   Copyright (c) 2009-2011 Simen Svale Skogsrud
 
@@ -89,7 +89,7 @@ typedef struct plan_block {
     // Block condition data to ensure correct execution depending on states and overrides.
     gc_override_flags_t overrides;  // Block bitfield variable for overrides
     planner_cond_t condition;       // Block bitfield variable defining block run conditions. Copied from pl_line_data.
-    uint32_t line_number;           // Block line number for real-time reporting. Copied from pl_line_data.
+    line_number_t line_number;      // Block line number for real-time reporting. Copied from pl_line_data.
     float target_mm[N_AXIS];        // Block target end location in mm for real-time reporting of distance to go.
 
     // Fields used by the motion planner to manage acceleration. Some of these values may be updated
@@ -147,7 +147,7 @@ typedef struct {
     planner_cond_t condition;       // Bitfield variable to indicate planner conditions. See defines above.
     gc_override_flags_t overrides;  // Block bitfield variable for overrides
     offset_id_t offset_id;
-    uint32_t line_number;           // Desired line number to report when executing.
+    line_number_t line_number;      // Desired line number to report when executing.
 //    void *parameters;               // TODO: pointer to extra parameters, for canned cycles and threading?
     char *message;                  // Message to be displayed when block is executed.
     output_command_t *output_commands;
@@ -162,6 +162,10 @@ typedef struct {
   float previous_unit_vec[N_AXIS];  // Unit vector of previous path line segment
   float previous_nominal_speed;     // Nominal speed of previous path line segment
   float actual_rpm;                 // Updated when in units per revolution blocks (G95) mode.
+  struct {
+      override_t feed_rate;         //!< Feed rate override value in percent
+      override_t rapid_rate;        //!< Rapids override value in percent
+  } override;
 } planner_t;
 
 // Initialize and reset the motion plan subsystem

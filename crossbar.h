@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2025 Terje Io
+  Copyright (c) 2021-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -23,6 +23,22 @@
 #define _CROSSBAR_H_
 
 #include "nuts_bolts.h"
+
+#if !defined N_AUX_AIN || defined __DOXYGEN__
+#define N_AUX_AIN 8
+#endif
+
+#if !defined N_AUX_AOUT || defined __DOXYGEN__
+#define N_AUX_AOUT 8
+#endif
+
+#if !defined N_AUX_DIN || defined __DOXYGEN__
+#define N_AUX_DIN 24
+#endif
+
+#if !defined N_AUX_DOUT || defined __DOXYGEN__
+#define N_AUX_DOUT 24
+#endif
 
 typedef enum {
 // NOTE: the sequence of the following enums MUST match the control_signals_t layout
@@ -51,9 +67,9 @@ typedef enum {
     Input_MotorFaultU,
     Input_MotorFaultV,
     Input_MotorFaultW,
-    Input_MotorFaultX_2,
-    Input_MotorFaultY_2,
-    Input_MotorFaultZ_2,
+    Input_MotorFaultX2,
+    Input_MotorFaultY2,
+    Input_MotorFaultZ2,
     Input_Probe2,
     Input_Probe2Overtravel,
     Input_Toolsetter,
@@ -113,6 +129,7 @@ typedef enum {
     Input_Aux13,
     Input_Aux14,
     Input_Aux15,
+#if N_AUX_DIN > 16
     Input_Aux16,
     Input_Aux17,
     Input_Aux18,
@@ -121,7 +138,22 @@ typedef enum {
     Input_Aux21,
     Input_Aux22,
     Input_Aux23,
+#endif
+#if N_AUX_DIN > 24
+    Input_Aux24,
+    Input_Aux25,
+    Input_Aux26,
+    Input_Aux27,
+    Input_Aux28,
+    Input_Aux29,
+    Input_Aux30,
+    Input_Aux31,
+    Input_AuxMax = Input_Aux31,
+#elif N_AUX_DIN > 16
     Input_AuxMax = Input_Aux23,
+#elif
+    Input_AuxMax = Input_Aux15,
+#endif
     Input_Analog_Aux0,
     Input_Analog_Aux1,
     Input_Analog_Aux2,
@@ -130,7 +162,19 @@ typedef enum {
     Input_Analog_Aux5,
     Input_Analog_Aux6,
     Input_Analog_Aux7,
+#if N_AUX_AIN > 8
+    Input_Analog_Aux8,
+    Input_Analog_Aux9,
+    Input_Analog_Aux10,
+    Input_Analog_Aux11,
+    Input_Analog_Aux12,
+    Input_Analog_Aux13,
+    Input_Analog_Aux14,
+    Input_Analog_Aux15,
+    Input_Analog_AuxMax = Input_Analog_Aux15,
+#else
     Input_Analog_AuxMax = Input_Analog_Aux7,
+#endif
 // Output pins
     Output_StepX,
     Outputs = Output_StepX,
@@ -213,6 +257,7 @@ typedef enum {
     Output_Aux13,
     Output_Aux14,
     Output_Aux15,
+#if N_AUX_DOUT > 16
     Output_Aux16,
     Output_Aux17,
     Output_Aux18,
@@ -221,7 +266,22 @@ typedef enum {
     Output_Aux21,
     Output_Aux22,
     Output_Aux23,
+#endif
+#if N_AUX_DOUT > 24
+    Output_Aux24,
+    Output_Aux25,
+    Output_Aux26,
+    Output_Aux27,
+    Output_Aux28,
+    Output_Aux29,
+    Output_Aux30,
+    Output_Aux31,
+    Output_AuxMax = Output_Aux31,
+#elif N_AUX_DOUT > 16
     Output_AuxMax = Output_Aux23,
+#elif
+    Output_AuxMax = Output_Aux15,
+#endif
     Output_Analog_Aux0,
     Output_Analog_Aux1,
     Output_Analog_Aux2,
@@ -230,7 +290,19 @@ typedef enum {
     Output_Analog_Aux5,
     Output_Analog_Aux6,
     Output_Analog_Aux7,
+#if N_AUX_AOUT > 8
+    Output_Analog_Aux8,
+    Output_Analog_Aux9,
+    Output_Analog_Aux10,
+    Output_Analog_Aux11,
+    Output_Analog_Aux12,
+    Output_Analog_Aux13,
+    Output_Analog_Aux14,
+    Output_Analog_Aux15,
+    Output_Analog_AuxMax = Output_Analog_Aux15,
+#else
     Output_Analog_AuxMax = Output_Analog_Aux7,
+#endif
     Output_LED,
     Output_LED_R,
     Output_LED_G,
@@ -247,6 +319,10 @@ typedef enum {
     Output_MOSI,
     Output_SPICLK,
     Output_SPICS,
+    Output_SPICS0 = Output_SPICS,
+    Output_SPICS1,
+    Output_SPICS2,
+    Output_SPICS3,
     Output_FlashCS,
     Output_SdCardCS,
     Input_SdCardDetect,
@@ -306,9 +382,9 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Input_MotorFaultX,          .name = "X motor fault" },
     { .function = Input_MotorFaultY,          .name = "Y motor fault" },
     { .function = Input_MotorFaultZ,          .name = "Z motor fault" },
-    { .function = Input_MotorFaultX_2,        .name = "X motor fault 2" },
-    { .function = Input_MotorFaultY_2,        .name = "Y motor fault 2" },
-    { .function = Input_MotorFaultZ_2,        .name = "Z motor fault 2" },
+    { .function = Input_MotorFaultX2,         .name = "X motor fault 2" },
+    { .function = Input_MotorFaultY2,         .name = "Y motor fault 2" },
+    { .function = Input_MotorFaultZ2,         .name = "Z motor fault 2" },
     { .function = Input_Probe2,               .name = "Probe 2" },
     { .function = Input_Probe2Overtravel,     .name = "Probe 2 overtravel" },
     { .function = Input_Toolsetter,           .name = "Toolsetter" },
@@ -347,6 +423,7 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Input_Aux13,                .name = "Aux in 13" },
     { .function = Input_Aux14,                .name = "Aux in 14" },
     { .function = Input_Aux15,                .name = "Aux in 15" },
+#if N_AUX_DIN > 16
     { .function = Input_Aux16,                .name = "Aux in 16" },
     { .function = Input_Aux17,                .name = "Aux in 17" },
     { .function = Input_Aux18,                .name = "Aux in 18" },
@@ -355,6 +432,17 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Input_Aux21,                .name = "Aux in 21" },
     { .function = Input_Aux22,                .name = "Aux in 22" },
     { .function = Input_Aux23,                .name = "Aux in 23" },
+#endif
+#if N_AUX_DIN > 24
+    { .function = Input_Aux24,                .name = "Aux in 24" },
+    { .function = Input_Aux25,                .name = "Aux in 25" },
+    { .function = Input_Aux26,                .name = "Aux in 26" },
+    { .function = Input_Aux27,                .name = "Aux in 27" },
+    { .function = Input_Aux28,                .name = "Aux in 28" },
+    { .function = Input_Aux29,                .name = "Aux in 29" },
+    { .function = Input_Aux30,                .name = "Aux in 30" },
+    { .function = Input_Aux31,                .name = "Aux in 31" },
+#endif
     { .function = Input_Analog_Aux0,          .name = "Aux analog in 0" },
     { .function = Input_Analog_Aux1,          .name = "Aux analog in 1" },
     { .function = Input_Analog_Aux2,          .name = "Aux analog in 2" },
@@ -363,6 +451,16 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Input_Analog_Aux5,          .name = "Aux analog in 5" },
     { .function = Input_Analog_Aux6,          .name = "Aux analog in 6" },
     { .function = Input_Analog_Aux7,          .name = "Aux analog in 7" },
+#if N_AUX_AIN > 8
+    { .function = Input_Analog_Aux8,          .name = "Aux analog in 8" },
+    { .function = Input_Analog_Aux9,          .name = "Aux analog in 9" },
+    { .function = Input_Analog_Aux10,         .name = "Aux analog in 10" },
+    { .function = Input_Analog_Aux11,         .name = "Aux analog in 11" },
+    { .function = Input_Analog_Aux12,         .name = "Aux analog in 12" },
+    { .function = Input_Analog_Aux13,         .name = "Aux analog in 13" },
+    { .function = Input_Analog_Aux14,         .name = "Aux analog in 14" },
+    { .function = Input_Analog_Aux15,         .name = "Aux analog in 15" },
+#endif
     { .function = Output_StepX,               .name = "X step" },
     { .function = Output_StepX2,              .name = "X2 step" },
     { .function = Output_StepY,               .name = "Y step" },
@@ -469,14 +567,26 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Output_Aux13,               .name = "Aux out 13" },
     { .function = Output_Aux14,               .name = "Aux out 14" },
     { .function = Output_Aux15,               .name = "Aux out 15" },
-    { .function = Output_Aux15,               .name = "Aux out 16" },
-    { .function = Output_Aux16,               .name = "Aux out 17" },
-    { .function = Output_Aux17,               .name = "Aux out 18" },
-    { .function = Output_Aux18,               .name = "Aux out 19" },
-    { .function = Output_Aux19,               .name = "Aux out 20" },
-    { .function = Output_Aux20,               .name = "Aux out 21" },
-    { .function = Output_Aux21,               .name = "Aux out 22" },
-    { .function = Output_Aux22,               .name = "Aux out 23" },
+#if N_AUX_DOUT > 16
+    { .function = Output_Aux16,               .name = "Aux out 16" },
+    { .function = Output_Aux17,               .name = "Aux out 17" },
+    { .function = Output_Aux18,               .name = "Aux out 18" },
+    { .function = Output_Aux19,               .name = "Aux out 19" },
+    { .function = Output_Aux20,               .name = "Aux out 20" },
+    { .function = Output_Aux21,               .name = "Aux out 21" },
+    { .function = Output_Aux22,               .name = "Aux out 22" },
+    { .function = Output_Aux23,               .name = "Aux out 23" },
+#endif
+#if N_AUX_DOUT > 24
+    { .function = Output_Aux24,               .name = "Aux out 24" },
+    { .function = Output_Aux25,               .name = "Aux out 25" },
+    { .function = Output_Aux26,               .name = "Aux out 26" },
+    { .function = Output_Aux27,               .name = "Aux out 27" },
+    { .function = Output_Aux28,               .name = "Aux out 28" },
+    { .function = Output_Aux29,               .name = "Aux out 29" },
+    { .function = Output_Aux30,               .name = "Aux out 30" },
+    { .function = Output_Aux31,               .name = "Aux out 31" },
+#endif
     { .function = Output_Analog_Aux0,         .name = "Aux analog out 0" },
     { .function = Output_Analog_Aux1,         .name = "Aux analog out 1" },
     { .function = Output_Analog_Aux2,         .name = "Aux analog out 2" },
@@ -485,6 +595,16 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Output_Analog_Aux5,         .name = "Aux analog out 5" },
     { .function = Output_Analog_Aux6,         .name = "Aux analog out 6" },
     { .function = Output_Analog_Aux7,         .name = "Aux analog out 7" },
+#if N_AUX_AOUT > 8
+    { .function = Output_Analog_Aux8,         .name = "Aux analog out 8" },
+    { .function = Output_Analog_Aux9,         .name = "Aux analog out 9" },
+    { .function = Output_Analog_Aux10,        .name = "Aux analog out 10" },
+    { .function = Output_Analog_Aux11,        .name = "Aux analog out 11" },
+    { .function = Output_Analog_Aux12,        .name = "Aux analog out 12" },
+    { .function = Output_Analog_Aux13,        .name = "Aux analog out 13" },
+    { .function = Output_Analog_Aux14,        .name = "Aux analog out 14" },
+    { .function = Output_Analog_Aux15,        .name = "Aux analog out 15" },
+#endif
     { .function = Output_LED,                 .name = "LED" },
     { .function = Output_LED_R,               .name = "LED R" },
     { .function = Output_LED_G,               .name = "LED G" },
@@ -497,7 +617,10 @@ PROGMEM static const pin_name_t pin_names[] = {
     { .function = Input_MISO,                 .name = "MISO" },
     { .function = Output_MOSI,                .name = "MOSI" },
     { .function = Output_SPICLK,              .name = "SPI CLK" },
-    { .function = Output_SPICS,               .name = "SPI CS" },
+    { .function = Output_SPICS0,              .name = "SPI CS0" },
+    { .function = Output_SPICS1,              .name = "SPI CS1" },
+    { .function = Output_SPICS2,              .name = "SPI CS2" },
+    { .function = Output_SPICS3,              .name = "SPI CS3" },
     { .function = Output_FlashCS,             .name = "Flash CS" },
     { .function = Output_SdCardCS,            .name = "SD card CS" },
     { .function = Input_SdCardDetect,         .name = "SD card detect" },
@@ -543,6 +666,7 @@ typedef enum {
     PinGroup_MotorUART,
     PinGroup_I2C,
     PinGroup_SPI,
+    PinGroup_SPICS,
     PinGroup_UART1,
     PinGroup_UART = PinGroup_UART1,
     PinGroup_UART2,
@@ -804,7 +928,7 @@ typedef union {
 
 static inline uint8_t xbar_fault_pin_to_axis (pin_function_t fn)
 {
-    return fn >= Input_MotorFaultX && fn <= Input_MotorFaultV ? fn - Input_MotorFaultX : (fn >= Input_MotorFaultX_2 && fn <= Input_MotorFaultZ_2 ? fn - Input_MotorFaultX_2 : 0);
+    return fn >= Input_MotorFaultX && fn <= Input_MotorFaultV ? fn - Input_MotorFaultX : (fn >= Input_MotorFaultX2 && fn <= Input_MotorFaultZ2 ? fn - Input_MotorFaultX2 : 0);
 }
 
 static inline stepper_state_t xbar_stepper_state_set (stepper_state_t *state, uint8_t axis, bool b)
@@ -827,6 +951,16 @@ static inline bool xbar_is_probe_in (pin_function_t fn)
     return fn == Input_Probe || fn == Input_Probe2 || fn == Input_Toolsetter;
 }
 
+static inline bool xbar_is_encoder_in (pin_function_t function)
+{
+    return function == Input_QEI_A || function == Input_QEI_B || function == Input_QEI_Select;
+}
+
+static inline bool xbar_is_motor_fault_in (pin_function_t function)
+{
+    return function >= Input_MotorFaultX && function <= Input_MotorFaultZ2;
+}
+
 #define N_AUX_AIN_MAX (Input_Analog_AuxMax - Input_Analog_Aux0 + 1)
 #define N_AUX_AOUT_MAX (Output_Analog_AuxMax - Output_Analog_Aux0 + 1)
 #define N_AUX_DIN_MAX (Input_AuxMax - Input_Aux0 + 1)
@@ -836,6 +970,7 @@ void xbar_set_homing_source (void);
 limit_signals_t xbar_get_homing_source (void);
 limit_signals_t xbar_get_homing_source_from_cycle (axes_signals_t homing_cycle);
 axes_signals_t xbar_fn_to_axismask (pin_function_t id);
+bool xbar_fn_for_secondary_motor (pin_function_t fn);
 const char *xbar_fn_to_pinname (pin_function_t id);
 const char *xbar_group_to_description ( pin_group_t group);
 const char *xbar_resolution_to_string (pin_cap_t cap);

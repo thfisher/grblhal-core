@@ -51,27 +51,36 @@ Do not alter values!
 typedef enum {
     NonModal_NoAction = 0,                  //!< 0 - Default, must be zero
     NonModal_Dwell = 4,                     //!< 4 - G4
-    NonModal_SetCoordinateData = 10,        //!< 10 - G10
+    NonModal_Settings = 10,                 //!< 10 - G10
     NonModal_GoHome_0 = 28,                 //!< 28 - G28
     NonModal_SetHome_0 = 38,                //!< 38 - G28.1
     NonModal_GoHome_1 = 30,                 //!< 30 - G30
     NonModal_SetHome_1 = 40,                //!< 40 - G30.1
     NonModal_AbsoluteOverride = 53,         //!< 53 - G53
-    NonModal_MacroCall = 65,                //!< 65 - G65
-    Modal_MacroCall = 66,                   //!< 66 - G66
-    Modal_MacroEnd = 67,                    //!< 67 - G67
     NonModal_SetCoordinateOffset = 92,      //!< 92 - G92
-    NonModal_MacroCall2 = 98,               //!< 98 - M98
     NonModal_ResetCoordinateOffset = 102,   //!< 102 - G92.1
     NonModal_ClearCoordinateOffset = 112,   //!< 112 - G92.2
  #if ENABLE_ACCELERATION_PROFILES
     NonModal_RestoreCoordinateOffset = 122, //!< 122 - G92.3
     NonModal_SetAccelerationProfile = 187   //!< 187 - G187
  #else
-    NonModal_RestoreCoordinateOffset = 122 //!< 122 - G92.3
+    NonModal_RestoreCoordinateOffset = 122  //!< 122 - G92.3
  #endif
 } non_modal_t;
 
+typedef enum {
+    ToolAction_None = 0,                    //!< 0 - Default, must be zero
+    ToolAction_Change = 6,                  //!< 6 - M6
+    ToolAction_Set = 61,                    //!< 61 - M61
+} tool_action_t;
+
+typedef enum {
+    MacroCall_End = 0,                      //!< 0 - Default, must be zero (G67)
+    MacroCall_NonModal = 65,                //!< 65 - G65
+    MacroCall_Modal = 66,                   //!< 66 - G66
+    MacroCall_Modal1 = 166,                 //!< 166 - G66.1
+    MacroCall_NonModal98 = 98,              //!< 98 - M98
+} macro_call_t;
 
 typedef enum {
     ModalState_NoAction = 0,                //!< 0 - Default, must be zero
@@ -94,6 +103,13 @@ typedef enum {
     MotionMode_QuadraticSpline = 51,        //!< 51 - G5.1
     MotionMode_SpindleSynchronized = 33,    //!< 33 - G33
     MotionMode_RigidTapping = 331,          //!< 331 - G33.1
+    MotionMode_LatheFinishing = 70,         //!< 70 - G70
+    MotionMode_LatheRoughingZ = 710,        //!< 71 - G71
+    MotionMode_LatheRoughingZ1 = 711,       //!< 711 - G71.1
+    MotionMode_LatheRoughingZ2 = 712,       //!< 712 - G71.2
+    MotionMode_LatheRoughingX = 720,        //!< 72 - G72
+    MotionMode_LatheRoughingX1 = 721,       //!< 721 - G72.1
+    MotionMode_LatheRoughingX2 = 722,       //!< 722 - G72.2
     MotionMode_DrillChipBreak = 73,         //!< 73 - G73
     MotionMode_Threading = 76,              //!< 76 - G76
     MotionMode_CannedCycle81 = 81,          //!< 81 - G81, drill
@@ -330,10 +346,32 @@ typedef enum {
   #endif
 } gc_probe_t;
 
+#if LATHE_UVW_OPTION
+
+//! Lathe tool orientation.
+    typedef enum {
+        ToolPos_Undefined = 0,
+        ToolPos1_135,
+        ToolPos2_45,
+        ToolPos3_315,
+        ToolPos4_225,
+        ToolPos5_180,
+        ToolPos6_90,
+        ToolPos7_0,
+        ToolPos8_270,
+        ToolPos9_Down,
+    } tool_orientation_t;
+
+#endif
+
 typedef struct {
     ccomp_mode_t side;
     bool first_move;
+    bool dynamic;
     float radius;
+#if LATHE_UVW_OPTION
+    tool_orientation_t orientation;
+#endif
 } gc_ccomp_t;
 
 //! Parser flags for special cases.
@@ -391,18 +429,18 @@ corresponding \a words (#parameter_words_t) union holds which parameters were fo
 __NOTE:__ Avoid using single-meaning words in user defined M-codes.
 */
 typedef struct {
-    float d;                        //!< Max spindle RPM in Constant Surface Speed Mode (G96)
-    float e;                        //!< Thread taper length (G76), M67 output number
-    float f;                        //!< Feed rate - single-meaning word
-    float h;                        //!< Tool number or number of G76 thread spring passes
-    float ijk[3];                   //!< I,J,K Axis arc offsets
-    float k;                        //!< G33 distance per revolution
+    float d;                        //!< Max spindle RPM in Constant Surface Speed Mode (G96).
+    float e;                        //!< Thread taper length (G76), M67 output number.
+    float f;                        //!< Feed rate - single-meaning word.
+    float h;                        //!< Tool number or number of G76 thread spring passes.
+    float ijk[3];                   //!< I,J,K Axis arc offsets.
+    float k;                        //!< G33 distance per revolution.
     float m;                        //!< G65 argument.
-    float p;                        //!< G10, 664 or dwell parameters
-    float q;                        //!< User defined M-code parameter, M67 output value, G64 naive CAM tolerance, G83 delta increment
-    float r;                        //!< Arc radius or retract position
-    float s;                        //!< Spindle speed - single-meaning word
-    float t;                        //!< Tool selection - single-meaning word               //
+    float p;                        //!< G10, 664 or dwell parameters.
+    float q;                        //!< User defined M-code parameter, M67 output value, G64 naive CAM tolerance, G83 delta increment.
+    float r;                        //!< Arc radius or retract position.
+    float s;                        //!< Spindle speed - single-meaning word.
+    float t;                        //!< Tool selection - single-meaning word.
 #ifndef A_AXIS
     float a;                        //!< G65 argument.
 #endif
@@ -421,14 +459,14 @@ typedef struct {
 #ifndef W_AXIS
     float w;                        //!< G65 argument.
 #endif
-    float xyz[N_AXIS];              //!< X,Y,Z (and A,B,C,U,V when enabled) translational axes
+    float xyz[N_AXIS];              //!< X,Y,Z (and A,B,C,U,V when enabled) translational axes.
 #if LATHE_UVW_OPTION
-    float uvw[3];                   //!< U,V,W lathe mode incremental mode motion
+    float uvw[3];                   //!< U,V,W lathe mode incremental mode motion.
 #endif
     int32_t $;                      //!< Spindle id - single-meaning word
-    int32_t n;                      //!< Line number - single-meaning word
-    uint32_t o;                     //!< Subroutine identifier - single-meaning word
-    uint32_t l;                     //!< G10, G65, G66 or canned cycles parameters
+    int32_t n;                      //!< Line number - single-meaning word. NOTE: LinuxCNC allows real numbers.
+    uint32_t o;                     //!< Subroutine identifier - single-meaning word.
+    uint32_t l;                     //!< G10, G65, G66 or canned cycles parameters.
 } gc_values_t;
 
 //! Parameter words found by parser - do NOT change order!
@@ -490,6 +528,21 @@ typedef struct {
     spindle_rpm_mode_t rpm_mode;    //!< {G96,G97}
 } spindle_modal_t;
 
+typedef union {
+    uint8_t value;
+    struct {
+        uint8_t units_imperial       :1, //!< {G20,G21}
+                distance_incremental :1, //!< {G90,G91}
+                diameter_mode        :1, //!< {G7,G8} Lathe diameter mode.
+                scaling_active       :1, //!< {G50,G51}
+                canned_cycle_active  :1,
+#if NGC_PARAMETERS_ENABLE
+                auto_restore         :1, //!< {M73} NOTE: set in snapshot when saving modal state
+#endif
+                unassigned           :2;
+    };
+} gc_modal_flags_t;
+
 // NOTE: When this struct is zeroed, the above defines set the defaults for the system.
 typedef struct {
     motion_mode_t motion;                //!< {G0,G1,G2,G3,G38.2,G80}
@@ -499,7 +552,9 @@ typedef struct {
     bool diameter_mode;                  //!< {G7,G8} Lathe diameter mode.
     //< uint8_t distance_arc;            //!< {G91.1} NOTE: Don't track. Only default supported.
     plane_select_t plane_select;         //!< {G17,G18,G19}
-    //< gc_ccomp_t cutter_comp;          //!< {G40,G41,G41.1,G42,G42.1} NOTE: Don't track. Only default (G40) supported.
+#if CUTTER_COMP_ENABLE
+    gc_ccomp_t cutter_comp;              //!< {G40,G41,G41.1,G42,G42.1}
+#endif
     tool_offset_mode_t tool_offset_mode; //!< {G43,G43.1,G49}
     coord_system_t g5x_offset;           //!< {G54,G55,G56,G57,G58,G59,G59.1,G59.2,G59.3}
 #if ENABLE_PATH_BLENDING
@@ -578,6 +633,11 @@ typedef struct {
     coord_data_t offset;    //!< Tool offset
     float radius;           //!< Radius of tool (currently unsupported)
     tool_id_t tool_id;      //!< Tool number
+#if LATHE_UVW_OPTION
+    float front_angle;
+    float back_angle;
+    tool_orientation_t orientation;
+#endif
 } tool_data_t;
 
 //! Tool table entry.
@@ -602,13 +662,35 @@ typedef struct {
 
 typedef struct g66_arguments
 {
+    macro_call_t call;
     uint32_t call_level;
     gc_values_t values;
     parameter_words_t words;
     struct g66_arguments *prev;
 } g66_arguments_t;
 
-#endif
+#if LATHE_UVW_OPTION
+
+typedef struct {
+    motion_mode_t motion;
+    float x;
+    float z;
+    union {
+        struct { // G70
+            float start_distance;
+            float end_distance;
+            float passes;
+        } finish;
+        struct { // G71.x & G72.x
+            float retract_distance;
+            float remaining_distance;
+            float increment;
+        } rough;
+    };
+} lathe_cycle_arguments_t;
+
+#endif // LATHE_UVW_OPTION
+#endif // NGC_PARAMETERS_ENABLE
 
 /*! \brief Parser state
 
@@ -624,17 +706,16 @@ typedef struct {
     float path_tolerance;           //!< Path blending tolerance
     float cam_tolerance;            //!< Naive CAM tolerance
 #endif
-    uint32_t line_number;                   //!< Last line number sent
+    line_number_t line_number;      //!< Last line number sent
     tool_id_t tool_pending;         //!< Tool to be selected on next M6
-#if NGC_EXPRESSIONS_ENABLE
-    uint32_t g43_pending;           //!< Tool offset to be selected on next M6, for macro ATC
-#endif
+    tool_id_t g43_pending;          //!< Tool offset from tool in tool table to be applied on M6 completed, set when G43 is in block with M6
     bool file_run;                  //!< Tracks % command
     bool file_stream;               //!< Tracks streaming from file
     bool is_laser_ppi_mode;
     bool is_rpm_rate_adjusted;
     bool tool_change;
     bool skip_blocks;               //!< true if skipping conditional blocks
+    bool ccomp_off;                 //!< true when cutter compensation has been turned off
     status_code_t last_error;       //!< last return value from parser
     offset_id_t offset_id;          //!< id(x) of last G92 coordinate offset (into circular buffer)
     coord_data_t offset_queue[MAX_OFFSET_ENTRIES];
@@ -663,6 +744,7 @@ It will also be passed to mc_jog_execute() and any user M-code validation and ex
  */
 typedef struct {
     non_modal_t non_modal_command;      //!< Non modal command
+    tool_action_t tool_action;          //!< Non modal tool change
     override_mode_t override_command;   //!< Override command TODO: add to non_modal above?
     user_mcode_t user_mcode;            //!< Set > 0 if a user M-code is found.
     bool user_mcode_sync;               //!< Set to \a true by M-code validation handler if M-code is to be executed after synchronization.
@@ -673,6 +755,8 @@ typedef struct {
     output_command_t output_command;    //!< Details about M62-M68 output command to execute if present in block.
     uint32_t arc_turns;                 //
     parameter_words_t g65_words;        //!< Parameter words to pass to G65 macro.
+    macro_call_t macro_call;
+    bool select_probe;                  // Set to \a true if the probe has to be selected before executing G38.x.
 #if NGC_PARAMETERS_ENABLE
     modal_state_action_t state_action;  //!< M70-M73 modal state action
 #endif
@@ -681,6 +765,40 @@ typedef struct {
 #endif
 } parser_block_t;
 
+// Define modal groups internal bitfield for checking multiple command violations and tracking the
+// type of command that is called in the block. A modal group is a group of g-code commands that are
+// mutually exclusive, or cannot exist on the same line, because they each toggle a state or execute
+// a unique motion. These are defined in the NIST RS274-NGC v3 g-code standard, available online,
+// and are similar/identical to other g-code interpreters by manufacturers (Haas,Fanuc,Mazak,etc).
+typedef union {
+    uint32_t mask;
+    struct {
+        uint32_t G0 :1, //!< [G4,G10,G28,G28.1,G30,G30.1,G53,G92,G92.1,G92.2,G92.3] Non-modal
+                 G1 :1, //!< [G0,G1,G2,G3,G33,G33.1,G38.2,G38.3,G38.4,G38.5,G76,G80,G81,G82,G83,G84,G85,G86,G89] Motion
+                 G2 :1, //!< [G17,G18,G19] Plane selection
+                 G3 :1, //!< [G90,G91] Distance mode
+                 G4 :1, //!< [G91.1] Arc IJK distance mode
+                 G5 :1, //!< [G93,G94,G95] Feed rate mode
+                 G6 :1, //!< [G20,G21] Units
+                 G7 :1, //!< [G40,G41,G41.1,G42,G42.1] Cutter radius compensation mode. ONLY G40 SUPPORTED.
+                 G8 :1, //!< [G43,G43.1,G49] Tool length offset
+                G10 :1, //!< [G98,G99] Return mode in canned cycles
+                G11 :1, //!< [G50,G51] Scaling
+                G12 :1, //!< [G54,G55,G56,G57,G58,G59,G59.1,G59.2,G59.3] Coordinate system selection (14)
+                G13 :1, //!< [G61] Control mode (15)
+                G14 :1, //!< [G96,G97] Spindle Speed Mode (13)
+                G15 :1, //!< [G7,G8] Lathe Diameter Mode
+                G16 :1, //!< [G65,G66,G67,M98] Macro call (12)
+
+                 M4 :1, //!< [M0,M1,M2,M30,M99] Stopping
+                 M5 :1, //!< [M62,M63,M64,M65,M66,M67,M68] Aux I/O
+                 M6 :1, //!< [M6] Tool change
+                 M7 :1, //!< [M3,M4,M5] Spindle turning
+                 M8 :1, //!< [M7,M8,M9] Coolant control
+                 M9 :1, //!< [M49,M50,M51,M53,M56] Override control
+                M10 :1; //!< User defined M commands
+    };
+} modal_groups_t;
 
 static inline axes_signals_t gc_paramwords_to_axes (parameter_words_t p_words)
 {
@@ -727,7 +845,7 @@ status_code_t gc_execute_block (char *block);
 #define gc_sync_position() system_convert_array_steps_to_mpos (gc_state.position, sys.position)
 
 // Sets g-code parser and planner position in mm.
-#define sync_position() plan_sync_position(); system_convert_array_steps_to_mpos (gc_state.position, sys.position)
+#define sync_position() do { plan_sync_position(); system_convert_array_steps_to_mpos(gc_state.position, sys.position); } while(0)
 
 // Set dynamic laser power mode to PPI (Pulses Per Inch)
 // Driver support for pulsing the laser on signal is required for this to work.
@@ -740,6 +858,8 @@ float *gc_get_scaling (void);
 
 // Get current axis offset.
 float gc_get_offset (uint_fast8_t idx, bool real_time);
+
+void gc_clear_offset (coord_system_id_t id);
 
 char *gc_coord_system_to_str (coord_system_id_t id);
 

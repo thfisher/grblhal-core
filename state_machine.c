@@ -30,6 +30,8 @@
 #include "state_machine.h"
 #include "override.h"
 
+extern void gc_tool_changed (void);
+
 static void state_idle (uint_fast16_t new_state);
 static void state_cycle (uint_fast16_t rt_exec);
 static void state_await_hold (uint_fast16_t rt_exec);
@@ -74,7 +76,7 @@ typedef struct {
 // Declare and initialize parking local variables
 static parking_data_t park = {0};
 
-static void state_spindle_restore (spindle_t *spindle, uint16_t on_delay_ms)
+FLASHMEM static void state_spindle_restore (spindle_t *spindle, uint16_t on_delay_ms)
 {
     if(spindle->hal) {
         if(grbl.on_spindle_programmed)
@@ -83,7 +85,7 @@ static void state_spindle_restore (spindle_t *spindle, uint16_t on_delay_ms)
     }
 }
 
-static void state_restore_conditions (restore_condition_t *condition)
+FLASHMEM static void state_restore_conditions (restore_condition_t *condition)
 {
     if(!settings.parking.flags.enabled || !park.flags.restart) {
 
@@ -108,7 +110,7 @@ static void state_restore_conditions (restore_condition_t *condition)
     }
 }
 
-static void enter_sleep (void)
+FLASHMEM static void enter_sleep (void)
 {
     st_go_idle();
     spindle_all_off(false);
@@ -117,7 +119,7 @@ static void enter_sleep (void)
     stateHandler = state_noop;
 }
 
-static bool initiate_hold (uint_fast16_t new_state)
+FLASHMEM static bool initiate_hold (uint_fast16_t new_state)
 {
     spindle_t *spindle;
     spindle_num_t spindle_num = N_SYS_SPINDLE;
@@ -181,7 +183,7 @@ static bool initiate_hold (uint_fast16_t new_state)
     return sys_state == STATE_CYCLE;
 }
 
-bool state_door_reopened (void)
+FLASHMEM bool state_door_reopened (void)
 {
     return settings.parking.flags.enabled && park.flags.restart;
 }
@@ -199,6 +201,7 @@ ISR_CODE sys_state_t ISR_FUNC(state_get)(void)
     return sys_state;
 }
 
+// NOTE: keep STATE_HAS_SUBSTATE in sync if this code is expanded to cover new states
 uint8_t state_get_substate (void)
 {
     uint8_t substate = 0;
@@ -252,21 +255,21 @@ void state_set (sys_state_t new_state)
                 break;
 
             case STATE_CYCLE:
-                if (sys_state == STATE_IDLE) {
+                if(sys_state == STATE_IDLE) {
                     // Start cycle only if queued motions exist in planner buffer and the motion is not canceled.
                     plan_block_t *block;
-                    if ((block = plan_get_current_block())) {
+                    if((block = plan_get_current_block())) {
                         sys_state = new_state;
                         sys.steppers_deenergize = false;    // Cancel stepper deenergize if pending.
                         st_prep_buffer();                   // Initialize step segment buffer before beginning cycle.
-                        if (block->spindle.state.synchronized) {
-
-                            uint32_t ms = hal.get_elapsed_ticks();
-
-                            if (block->spindle.hal->reset_data)
-                                block->spindle.hal->reset_data();
+                        if(block->spindle.state.synchronized) {
 
                             if(!block->condition.units_per_rev) {
+
+                                uint32_t ms = hal.get_elapsed_ticks();
+
+                                if(block->spindle.hal->reset_data)
+                                    block->spindle.hal->reset_data();
 
                                 uint32_t index = block->spindle.hal->get_data(SpindleData_Counters)->index_count + 2;
 
@@ -283,7 +286,12 @@ void state_set (sys_state_t new_state)
                                         system_set_exec_state_flag(EXEC_RESET);
                                         return;
                                     }
-                                    // TODO: allow real time reporting?
+/* TODO: allow real time reporting?
+                                    if(bit_istrue(sys.rt_exec_state, EXEC_STATUS_REPORT)) {
+                                        system_clear_exec_state_flag(EXEC_STATUS_REPORT);
+                                        report_realtime_status(hal.stream.write_all, &hal.stream.report);
+                                    }
+*/
                                 }
                             } else if(block->spindle.hal->get_data(SpindleData_RPM)->rpm == 0.0f) {
                                 system_raise_alarm(Alarm_Spindle);
@@ -360,14 +368,14 @@ void state_set (sys_state_t new_state)
 }
 
 // Suspend manager. Controls spindle overrides in hold states.
-void state_suspend_manager (void)
+FLASHMEM void state_suspend_manager (void)
 {
-    if(stateHandler != state_await_resume || !gc_spindle_get(0)->state.on)
+    spindle_t *spindle = &restore_condition.spindle[restore_condition.spindle_num];
+
+    if(stateHandler != state_await_resume || !gc_spindle_get(0)->state.on || (spindle->hal && spindle->hal->param->option.restore_rpm))
         return;
 
     if(sys.override.spindle_stop.value) {
-
-        spindle_t *spindle = &restore_condition.spindle[restore_condition.spindle_num];
 
         // Handles beginning of spindle stop
         if(sys.override.spindle_stop.initiate) {
@@ -391,9 +399,9 @@ void state_suspend_manager (void)
                 grbl.on_override_changed(OverrideChanged_SpindleState);
         }
 
-    } else if(sys.step_control.update_spindle_rpm && restore_condition.spindle[0].hal->get_state(restore_condition.spindle[0].hal).on) {
+    } else if(sys.step_control.update_spindle_rpm && spindle->hal && spindle->hal->get_state(spindle->hal).on) {
         // Handles spindle state during hold. NOTE: Spindle speed overrides may be altered during hold state.
-        state_spindle_restore(&restore_condition.spindle[restore_condition.spindle_num], settings.spindle.on_delay);
+        state_spindle_restore(spindle, settings.spindle.on_delay);
         sys.step_control.update_spindle_rpm = Off;
     }
 }
@@ -454,18 +462,15 @@ static void state_cycle (uint_fast16_t rt_exec)
 
 /*! /brief Waits for tool change cycle to end then restarts the cycle.
  */
-static void state_await_toolchanged (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_toolchanged (uint_fast16_t rt_exec)
 {
-    if (rt_exec & EXEC_CYCLE_START) {
-        if (!gc_state.tool_change) {
+    if(rt_exec & EXEC_CYCLE_START) {
+        if(!gc_state.tool_change) {
 
-            if (hal.stream.suspend_read)
+            if(hal.stream.suspend_read)
                 hal.stream.suspend_read(false); // Tool change complete, restore "normal" stream input.
 
-            if(grbl.on_tool_changed)
-                grbl.on_tool_changed(gc_state.tool);
-
-            report_add_realtime(Report_Tool);
+            gc_tool_changed();
         }
         pending_state = gc_state.tool_change ? STATE_TOOL_CHANGE : STATE_IDLE;
         state_set(STATE_IDLE);
@@ -477,7 +482,7 @@ static void state_await_toolchanged (uint_fast16_t rt_exec)
 
 /*! /brief Waits for motion to end to complete then executes actions depending on the current sys_state.
  */
-static void state_await_motion_cancel (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_motion_cancel (uint_fast16_t rt_exec)
 {
     if (rt_exec & EXEC_CYCLE_COMPLETE) {
         if (sys_state == STATE_JOG) {
@@ -490,17 +495,16 @@ static void state_await_motion_cancel (uint_fast16_t rt_exec)
 
         state_set(pending_state);
 
-        if(sys.alarm_pending) {
+        if(sys.alarm_pending)
             system_set_exec_alarm(sys.alarm_pending);
-            sys.alarm_pending = Alarm_None;
-        } else if(gc_state.tool_change)
+        else if(gc_state.tool_change)
             state_set(STATE_TOOL_CHANGE);
     }
 }
 
 /*! /brief Waits for feed hold to complete then executes actions depending on the current sys_state.
  */
-static void state_await_hold (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_hold (uint_fast16_t rt_exec)
 {
     if (rt_exec & EXEC_CYCLE_COMPLETE) {
 
@@ -509,10 +513,8 @@ static void state_await_hold (uint_fast16_t rt_exec)
         plan_cycle_reinitialize();
         sys.step_control.flags = 0;
 
-        if (sys.alarm_pending) {
+        if(sys.alarm_pending)
             system_set_exec_alarm(sys.alarm_pending);
-            sys.alarm_pending = Alarm_None;
-        }
 
         switch (sys_state) {
 
@@ -533,7 +535,7 @@ static void state_await_hold (uint_fast16_t rt_exec)
 
                 // Parking requires parking axis homed, the current location not exceeding the
                 // parking target location, and laser mode disabled.
-                if (settings.parking.flags.enabled && !sys.override.control.parking_disable && settings.mode != Mode_Laser) {
+                if(settings.parking.flags.enabled && !(sys.override.control.parking_disable || gc_spindle_get(0)->hal->cap.laser)) {
 
                     // Get current position and store as restore location.
                     if (!park.flags.active) {
@@ -593,6 +595,18 @@ static void state_await_hold (uint_fast16_t rt_exec)
                 sys.flags.is_parking = false;
                 break;
 
+            case STATE_HOLD:
+                {
+                    spindle_t *spindle;
+                    if((spindle = &restore_condition.spindle[restore_condition.spindle_num])->hal && settings.flags.set_rpm_0_during_hold) {
+                        if(spindle->state.on && !(spindle->hal->cap.laser && spindle->state.ccw)) {
+                            spindle->hal->param->option.restore_rpm = settings.flags.restore_after_feed_hold;
+                            spindle->hal->set_state(spindle->hal, spindle->state, spindle->hal->rpm_min);
+                        }
+                    }
+                }
+                break;
+
             default:
                 break;
         }
@@ -610,7 +624,7 @@ static void state_await_hold (uint_fast16_t rt_exec)
 
 /*! /brief Waits for action to execute when in feed hold state.
  */
-static void state_await_resume (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_resume (uint_fast16_t rt_exec)
 {
     if ((rt_exec & EXEC_CYCLE_COMPLETE) && settings.parking.flags.enabled) {
         if (sys.step_control.execute_sys_motion) {
@@ -672,18 +686,19 @@ static void state_await_resume (uint_fast16_t rt_exec)
                 break;
 
             default:
-                if (!settings.flags.restore_after_feed_hold) {
+                if(!settings.flags.restore_after_feed_hold) {
                     if (!restore_condition.spindle[restore_condition.spindle_num].hal->get_state(restore_condition.spindle[restore_condition.spindle_num].hal).on)
                         gc_spindle_off();
                     sys.override.spindle_stop.value = 0; // Clear spindle stop override states
                 } else {
 
-                    if (restore_condition.spindle[restore_condition.spindle_num].state.on != restore_condition.spindle[restore_condition.spindle_num].hal->get_state(restore_condition.spindle[restore_condition.spindle_num].hal).on) {
+                    spindle_t *spindle;
+                    if((spindle = &restore_condition.spindle[restore_condition.spindle_num])->hal && (spindle->hal->param->option.restore_rpm || spindle->state.on != spindle->hal->get_state(spindle->hal).on)) {
                         grbl.report.feedback_message(Message_SpindleRestore);
-                        state_spindle_restore(&restore_condition.spindle[restore_condition.spindle_num], settings.spindle.on_delay);
+                        state_spindle_restore(spindle, settings.spindle.on_delay);
                     }
 
-                    if (restore_condition.coolant.value != hal.coolant.get_state().value) {
+                    if(restore_condition.coolant.value != hal.coolant.get_state().value) {
                         // NOTE: Laser mode will honor this delay. An exhaust system is often controlled by coolant signals.
                         coolant_restore(restore_condition.coolant, settings.coolant.on_delay);
                         gc_coolant(restore_condition.coolant);
@@ -715,7 +730,7 @@ static void state_await_resume (uint_fast16_t rt_exec)
 /*! /brief Waits until plunge motion abort is completed then calls state_await_hold() to restart retraction.
 state_await_hold() is set to handle the cycle complete event.
  */
-static void state_await_restart_retract (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_restart_retract (uint_fast16_t rt_exec)
 {
     if (rt_exec & EXEC_CYCLE_COMPLETE) {
 
@@ -732,7 +747,7 @@ static void state_await_restart_retract (uint_fast16_t rt_exec)
 /*! /brief Sets up a feed hold to abort plunge motion.
 state_await_restart_retract() is set to handle the cycle complete event.
  */
-static void restart_retract (void)
+FLASHMEM static void restart_retract (void)
 {
     grbl.report.feedback_message(Message_SafetyDoorAjar);
 
@@ -752,7 +767,7 @@ static void restart_retract (void)
 /*! /brief Waits until slow plunge motion is completed then deenergize spindle and coolant and execute fast retract motion.
 state_await_resume() is set to handle the cycle complete event.
  */
-static void state_await_waypoint_retract (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_waypoint_retract (uint_fast16_t rt_exec)
 {
     if (rt_exec & EXEC_CYCLE_COMPLETE) {
 
@@ -793,7 +808,7 @@ static void state_await_waypoint_retract (uint_fast16_t rt_exec)
 state_await_resumed() is set to handle the cycle complete event.
 Note: A safety door event during restoration or motion will halt it and restart the retract sequence.
  */
-static void state_restore (uint_fast16_t rt_exec)
+FLASHMEM static void state_restore (uint_fast16_t rt_exec)
 {
     if (rt_exec & EXEC_SAFETY_DOOR) {
         if(park.flags.restoring)
@@ -848,7 +863,7 @@ static void state_restore (uint_fast16_t rt_exec)
 /*! /brief Waits until slow plunge motion is complete then restart the cycle.
 Note: A safety door event during the motion will halt it and restart the retract sequence.
  */
-static void state_await_resumed (uint_fast16_t rt_exec)
+FLASHMEM static void state_await_resumed (uint_fast16_t rt_exec)
 {
     if (rt_exec & EXEC_SAFETY_DOOR)
         restart_retract();

@@ -85,6 +85,11 @@ __NOTE:__ flags are mutually exclusive, bit map allows testing for multiple stat
 #define STATE_TOOL_CHANGE   bit(9) //!< Manual tool change, similar to #STATE_HOLD - but stops spindle and allows jogging.
 ///@}
 
+//! \def STATE_HAS_SUBSTATE
+/*! @name Bitmask with system states that may have substate(s).
+*/
+#define STATE_HAS_SUBSTATE (STATE_CYCLE|STATE_HOLD|STATE_ESTOP|STATE_ALARM|STATE_SAFETY_DOOR)
+
 //! \def system_state_t
 /*! @name System state enum values.
 
@@ -240,7 +245,6 @@ typedef struct system {
     bool reset_pending;                     //!< Set when reset processing is underway.
     bool blocking_event;                    //!< Set when a blocking event that requires reset to clear is active.
     volatile bool steppers_deenergize;      //!< Set to true to deenergize stepperes
-    alarm_code_t alarm_pending;             //!< Delayed alarm, currently used for probe protection
     volatile system_flags_t flags;                   //!< Assorted state flags
     step_control_t step_control;            //!< Governs the step segment generator depending on system state.
     axes_signals_t homing_axis_lock;        //!< Locks axes when limits engage. Used as an axis motion mask in the stepper ISR.
@@ -269,6 +273,7 @@ typedef struct system {
 //!  @name The following variables are not cleared upon soft reset, do NOT move. alarm must be first!
 //@{
     alarm_code_t alarm;                     //!< Current alarm, only valid if system state is STATE_ALARM.
+    alarm_code_t alarm_pending;             //!< Delayed alarm, currently used for probe protection
     bool cold_start;                        //!< Set to true on boot, is false on subsequent soft resets.
     bool ioinit_pending;
     bool driver_started;                    //!< Set to true when driver initialization is completed.
@@ -313,6 +318,10 @@ typedef struct sys_commands_str {
 } sys_commands_t;
 
 extern system_t sys;
+
+uint8_t system_n_axis (void);
+uint8_t system_axis_mask (void);
+uint8_t system_claim_axis (void);
 
 status_code_t system_execute_line (char *line);
 void system_execute_startup (void *data);

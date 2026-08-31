@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2023-2025 Terje Io
+  Copyright (c) 2023-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -53,7 +53,7 @@ axes_signals_t xbar_fn_to_axismask (pin_function_t fn)
         case Input_LimitX_2:
         case Input_HomeX:
         case Input_MotorFaultX:
-        case Input_MotorFaultX_2:
+        case Input_MotorFaultX2:
         case Output_StepperEnableX:
             mask.x = On;
             break;
@@ -63,7 +63,7 @@ axes_signals_t xbar_fn_to_axismask (pin_function_t fn)
         case Input_LimitY_2:
         case Input_HomeY:
         case Input_MotorFaultY:
-        case Input_MotorFaultY_2:
+        case Input_MotorFaultY2:
         case Output_StepperEnableY:
             mask.y = On;
             break;
@@ -73,7 +73,7 @@ axes_signals_t xbar_fn_to_axismask (pin_function_t fn)
         case Input_LimitZ_2:
         case Input_HomeZ:
         case Input_MotorFaultZ:
-        case Input_MotorFaultZ_2:
+        case Input_MotorFaultZ2:
         case Output_StepperEnableZ:
             mask.z = On;
             break;
@@ -137,6 +137,16 @@ axes_signals_t xbar_fn_to_axismask (pin_function_t fn)
     }
 
     return mask;
+}
+
+bool xbar_fn_for_secondary_motor (pin_function_t fn)
+{
+    return fn == Input_LimitX_2 ||
+            fn == Input_LimitY_2 ||
+             fn == Input_LimitZ_2 ||
+              fn == Input_MotorFaultX2 ||
+               fn == Input_MotorFaultY2 ||
+                fn == Input_MotorFaultZ2;
 }
 
 // Sets limit signals used by homing when home signals are not available.

@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2025 Terje Io
+  Copyright (c) 2021-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -47,9 +47,13 @@
 #endif
 
 #if defined(STM32_PLATFORM) || defined(__LPC17XX__) || defined(__IMXRT1062__) || defined(__SAM3X8E__)
+#define INT32FMT "%li"
+#define INT32SFMT "li"
 #define UINT32FMT "%lu"
 #define UINT32SFMT "lu"
 #else
+#define INT32FMT "%i"
+#define INT32SFMT "i"
 #define UINT32FMT "%u"
 #define UINT32SFMT "u"
 #endif

@@ -3,7 +3,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2017-2025 Terje Io
+  Copyright (c) 2017-2026 Terje Io
   Copyright (c) 2012-2015 Sungeun K. Jeon
   Copyright (c) 2009-2011 Simen Svale Skogsrud
 
@@ -48,6 +48,7 @@
 #define SPINDLE_STEPPER    19
 #define SPINDLE_NOWFOREVER 20
 #define SPINDLE_MY_SPINDLE 30
+#define SPINDLE_REFID_MAX  SPINDLE_NOWFOREVER
 
 #define SPINDLE_ALL_VFD ((1<<SPINDLE_HUANYANG1)|(1<<SPINDLE_HUANYANG2)|(1<<SPINDLE_GS20)|(1<<SPINDLE_YL620A)|(1<<SPINDLE_MODVFD)|(1<<SPINDLE_H100)|(1<<SPINDLE_NOWFOREVER))
 #define SPINDLE_ALL (SPINDLE_ALL_VFD|(1<<SPINDLE_PWM0))
@@ -75,8 +76,9 @@ typedef union {
 typedef union {
     uint16_t value; //!< All bitmap flags.
     struct {
-        uint16_t variable          :1, //!< Variable spindle speed is supported.
-                 direction         :1, //!< Spindle direction (M4) is supported.
+        uint16_t enable            :1, //!< Spindle enable signal is supported.
+                 direction         :1, //!< Spindle direction signal (M4) is supported.
+                 variable          :1, //!< Variable spindle speed is supported.
                  at_speed          :1, //!< Spindle at speed feedback is supported.
                  laser             :1, //!< Spindle can control a laser.
                  pwm_invert        :1, //!< Spindle PWM output can be inverted.
@@ -87,7 +89,7 @@ typedef union {
                  cmd_controlled    :1, //!< Command controlled, e.g. over ModBus.
                  cloned            :1, //!< Spindle is cloned.
                  torch             :1, //!< Spindle is plasma torch.
-                 unassigned        :4;
+                 unassigned        :3;
     };
 } spindle_cap_t;
 
@@ -98,6 +100,7 @@ typedef struct {
     float rpm_high_limit;
     float angular_position; //!< Number of revolutions since last reset
     float rpm_programmed;
+    bool ccw;
     uint32_t index_count;
     uint32_t pulse_count;
     uint32_t error_count;
@@ -220,9 +223,17 @@ typedef union {
                 pwm_disable           :1, // PWM spindle only
                 g92offset             :1,
                 pwm_ramped            :1, // PWM spindle only
-                unassigned            :3;
+                ignore_delays         :1, // PWM spindle only
+                unassigned            :2;
     };
 } spindle_settings_flags_t;
+
+#if N_SPINDLE == 1
+#define PWM_SPINDLE_NO_DELAYS
+#else
+#define PWM_SPINDLE_NO_DELAYS ",Ignore on/off delays"
+#endif
+
 
 typedef union {
     uint8_t value;
@@ -230,7 +241,8 @@ typedef union {
     struct {
         uint8_t allow_axis_control    :1,
                 sync_position         :1,
-                unassigned            :6;
+                cfg_as_rotary         :1,
+                unassigned            :5;
     };
 } stepper_spindle_settings_flags_t;
 
@@ -348,8 +360,13 @@ typedef struct spindle_param {
     spindle_state_t state;
     override_t override_pct;    //!< Spindle RPM override value in percent
     spindle_css_data_t css;     //!< Data used for Constant Surface Speed Mode (CSS) calculations, NULL if not in CSS mode.
-    bool ramp_up;
-    bool ramp_down;
+    struct {
+        uint8_t ramp_up          :1,
+                ramp_down        :1,
+                ignore_delays    :1,
+                override_disable :1,
+                restore_rpm      :1;
+    } option;
     spindle_ptrs_t *hal;
 } spindle_param_t;
 

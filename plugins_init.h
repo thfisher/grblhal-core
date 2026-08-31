@@ -7,7 +7,7 @@
 
   Part of grblHAL
 
-  Copyright (c) 2021-2025 Terje Io
+  Copyright (c) 2021-2026 Terje Io
 
   grblHAL is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -181,6 +181,11 @@
     homing_pulloff_init();
 #endif
 
+#if ENCODER_ENABLE
+    extern bool encoder_init (void);
+    encoder_init();
+#endif
+
     extern void my_plugin_init (void);
     my_plugin_init();
 
@@ -247,6 +252,31 @@
   extern void keyway_init (void);
   keyway_init();
 #endif
+
+#if PNEUMASEAL_ENABLE
+    extern void pneumaseal_init (void);
+    pneumaseal_init();
+#endif
+
+#if THERMISTOR_ENABLE
+    extern void thermistor_init (void);
+    thermistor_init();
+#endif
+
+#if SPINDLE_INTERLOCK_ENABLE
+    extern void spindle_interlock_init (void);
+    spindle_interlock_init();
+#endif
+
+#if VIRTUAL_INPUTS_ENABLE
+    extern void virtual_inputs_init (void);
+    virtual_inputs_init();
+#endif
+
+#if HOMING_ACCEL_ENABLE
+    extern void homing_accel_init (void);
+    homing_accel_init();
+#endif;
 
 // End third party plugin definitions.
 

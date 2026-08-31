@@ -29,10 +29,12 @@
 
 #include "hal.h"
 #include "config.h"
+#include "encoders.h"
 #include "machine_limits.h"
 #include "nvs_buffer.h"
 #include "tool_change.h"
 #include "state_machine.h"
+#include "strutils.h"
 #if ENABLE_BACKLASH_COMPENSATION
 #include "motion_control.h"
 #endif
@@ -55,7 +57,7 @@ const settings_restore_t settings_all = {
     .driver_parameters = SETTINGS_RESTORE_DRIVER_PARAMETERS
 };
 
-PROGMEM const settings_t defaults = {
+PROGMEM static const settings_t defaults = {
 
     .version.id = SETTINGS_VERSION,
     .version.build = (GRBL_BUILD - 20000000UL),
@@ -94,6 +96,11 @@ PROGMEM const settings_t defaults = {
     .flags.keep_rapids_override_on_reset = DEFAULT_KEEP_RAPIDS_OVR_ON_RESET,
     .flags.keep_feed_override_on_reset = DEFAULT_KEEP_FEED_OVR_ON_RESET,
     .flags.tool_persistent = DEFAULT_PERSIST_TOOL,
+#if defined(ROTARY_FIX) // for backwards compatibility
+    .flags.rotary_fix_enable = On,
+#else
+    .flags.rotary_fix_enable = DEFAULT_ROTARY_FIX_ENABLE,
+#endif
 
     .probe.disable_probe_pullup = DEFAULT_PROBE_SIGNAL_DISABLE_PULLUP,
     .probe.allow_feed_override = DEFAULT_ALLOW_FEED_OVERRIDE_DURING_PROBE_CYCLES,
@@ -199,6 +206,7 @@ PROGMEM const settings_t defaults = {
     .pwm_spindle.flags.enable_rpm_controlled = DEFAULT_SPINDLE_ENABLE_OFF_WITH_ZERO_SPEED,
     .pwm_spindle.flags.laser_mode_disable = DEFAULT_PWM_SPINDLE_DISABLE_LASER_MODE,
     .pwm_spindle.flags.pwm_ramped = DEFAULT_PWM_SPINDLE_ENABLE_RAMP,
+    .pwm_spindle.flags.ignore_delays = DEFAULT_PWM_SPINDLE_IGNORE_DELAYS,
     .pwm_spindle.invert.on = DEFAULT_INVERT_SPINDLE_ENABLE_PIN,
     .pwm_spindle.invert.ccw = DEFAULT_INVERT_SPINDLE_CCW_PIN,
     .pwm_spindle.invert.pwm = DEFAULT_INVERT_SPINDLE_PWM_PIN,
@@ -367,6 +375,10 @@ PROGMEM const settings_t defaults = {
     .tool_change.seek_rate = DEFAULT_TOOLCHANGE_SEEK_RATE,
     .tool_change.pulloff_rate = DEFAULT_TOOLCHANGE_PULLOFF_RATE,
 
+    .macro_atc_flags.execute_m6t0 = DEFAULT_MACRO_ATC_OPTION_EXECUTEM6T0,
+    .macro_atc_flags.error_on_no_macro = DEFAULT_MACRO_ATC_ERROR_NO_MACRO,
+    .macro_atc_flags.random_toolchanger = DEFAULT_MACRO_ATC_RANDOM_TOOLCHANGER,
+
     .parking.flags.enabled = DEFAULT_PARKING_ENABLE,
     .parking.flags.deactivate_upon_init = DEFAULT_DEACTIVATE_PARKING_UPON_INIT,
     .parking.flags.enable_override_control= DEFAULT_ENABLE_PARKING_OVERRIDE_CONTROL,
@@ -382,7 +394,7 @@ PROGMEM const settings_t defaults = {
     .safety_door.coolant_on_delay = DEFAULT_SAFETY_DOOR_COOLANT_DELAY,
 
     .fs_options.sd_mount_on_boot = DEFAULT_FS_SD_AUTOMOUNT,
-    .fs_options.lfs_hidden = DEFAULT_FS_LITLLEFS_HIDDEN,
+    .fs_options.lfs_hidden = DEFAULT_FS_LITTLEFS_HIDDEN,
     .fs_options.hierarchical_listing = DEFAULT_FS_HIERACHICAL_LISTING,
 
     .modbus_baud = DEFAULT_MODBUS_STREAM_BAUD,
@@ -396,7 +408,7 @@ PROGMEM const settings_t defaults = {
 
 static bool group_is_available (const setting_group_detail_t *group)
 {
-    return true;
+    return group->id < Group_XAxis || group->id > Group_WAxis || group->id < Group_Axis0 + system_n_axis();
 }
 
 PROGMEM static const setting_group_detail_t setting_group_detail [] = {
@@ -491,6 +503,24 @@ static struct {
 #endif
 } override_backup = { .valid = false };
 
+inline static bool setting_is_string (setting_datatype_t  datatype)
+{
+    return datatype == Format_String || datatype == Format_Password || datatype == Format_IPv4;
+}
+
+inline static bool setting_is_core (setting_type_t type)
+{
+    return !(type == Setting_NonCore || type == Setting_NonCoreFn);
+}
+
+static inline bool setting_isfntype (setting_type_t type)
+{
+    return type == Setting_NonCoreFn ||
+            type == Setting_IsExtendedFn ||
+             type == Setting_IsLegacyFn ||
+              type == Setting_IsExpandedFn;
+}
+
 static void save_override_backup (void)
 {
     uint_fast8_t idx = N_AXIS;
@@ -579,27 +609,164 @@ static void homing_pulloff_init (float pulloff)
     limits_homing_pulloff(&distance);
 }
 
+FLASHMEM static status_code_t set_axis_mask (setting_id_t id, uint_fast16_t value)
+{
+    status_code_t status = Status_OK;
+
+    value &= AXES_BITMASK;
+
+    switch(id) {
+
+        case Setting_StepInvertMask:
+            settings.steppers.step_invert.mask = value;
+            break;
+
+        case Setting_DirInvertMask:
+            settings.steppers.dir_invert.mask = value;
+            break;
+
+        case Setting_InvertStepperEnable:
 #if COMPATIBILITY_LEVEL > 2
-
-static status_code_t set_enable_invert_mask (setting_id_t id, uint_fast16_t int_value)
-{
-    settings.steppers.enable_invert.mask = int_value ? 0 : AXES_BITMASK;
-
-    return Status_OK;
-}
-
+            settings.steppers.enable_invert.mask = value ? 0 : AXES_BITMASK;
+#else
+            settings.steppers.enable_invert.mask = value;
 #endif
+            break;
 
+        case Setting_LimitPinsInvertMask:
 #if COMPATIBILITY_LEVEL > 1
+            settings.limits.invert.mask = value ? (~DEFAULT_LIMIT_SIGNALS_INVERT_MASK & AXES_BITMASK) : DEFAULT_LIMIT_SIGNALS_INVERT_MASK;
+#else
+            settings.limits.invert.mask = value;
+#endif
+            break;
 
-static status_code_t set_limits_invert_mask (setting_id_t id, uint_fast16_t int_value)
-{
-    settings.limits.invert.mask = (int_value ? ~(DEFAULT_LIMIT_SIGNALS_INVERT_MASK) : DEFAULT_LIMIT_SIGNALS_INVERT_MASK) & AXES_BITMASK;
+        case Setting_LimitPullUpDisableMask:
+            settings.limits.disable_pullup.mask = value;
+            break;
 
-    return Status_OK;
+        case Setting_HomingDirMask:
+            settings.homing.dir_mask.value = value;
+            break;
+
+        case Setting_SteppersEnergize:
+            settings.steppers.energize.mask = value;
+            break;
+
+        case Setting_HomingCycle_1:
+        case Setting_HomingCycle_2:
+        case Setting_HomingCycle_3:
+        case Setting_HomingCycle_4:
+        case Setting_HomingCycle_5:
+        case Setting_HomingCycle_6:
+            settings.homing.cycle[id - Setting_HomingCycle_1].mask = value;
+            break;
+
+        case Setting_HomePinsInvertMask:
+            settings.home_invert.mask = value;
+            break;
+
+        case Setting_MotorWarningsEnable:
+            settings.motor_warning_enable.mask = value;
+            break;
+
+        case Setting_MotorWarningsInvert:
+            settings.motor_warning_invert.mask = value;
+            break;
+
+        case Setting_MotorFaultsEnable:
+            settings.motor_fault_enable.mask = value;
+            break;
+
+        case Setting_MotorFaultsInvert:
+            settings.motor_fault_invert.mask = value;
+            break;
+
+        default:
+            // Should never enter here
+            break;
+    }
+
+    return status;
 }
 
+FLASHMEM static uint32_t get_axis_mask (setting_id_t id, uint_fast16_t int_value)
+{
+    uint32_t value = 0;
+
+    switch(id) {
+
+        case Setting_StepInvertMask:
+            value = settings.steppers.step_invert.mask;
+            break;
+
+        case Setting_DirInvertMask:
+            value = settings.steppers.dir_invert.mask;
+            break;
+
+        case Setting_InvertStepperEnable:
+#if COMPATIBILITY_LEVEL > 2
+            value = !!settings.steppers.enable_invert.mask;
+#else
+            value = settings.steppers.enable_invert.mask;
 #endif
+            break;
+
+        case Setting_LimitPinsInvertMask:
+#if COMPATIBILITY_LEVEL > 1
+            value = settings.limits.invert.mask == DEFAULT_LIMIT_SIGNALS_INVERT_MASK ? 0 : 1;
+#else
+            value = settings.limits.invert.mask;
+#endif
+            break;
+
+        case Setting_LimitPullUpDisableMask:
+            value = settings.limits.disable_pullup.mask;
+            break;
+
+        case Setting_HomingDirMask:
+            value = settings.homing.dir_mask.value;
+            break;
+
+        case Setting_SteppersEnergize:
+            value = settings.steppers.energize.mask;
+            break;
+
+        case Setting_HomingCycle_1:
+        case Setting_HomingCycle_2:
+        case Setting_HomingCycle_3:
+        case Setting_HomingCycle_4:
+        case Setting_HomingCycle_5:
+        case Setting_HomingCycle_6:
+            value = settings.homing.cycle[id - Setting_HomingCycle_1].mask & system_axis_mask();
+            break;
+
+        case Setting_HomePinsInvertMask:
+            value = settings.home_invert.mask;
+            break;
+
+        case Setting_MotorWarningsEnable:
+            value = settings.motor_warning_enable.mask;
+            break;
+
+        case Setting_MotorWarningsInvert:
+            value = settings.motor_warning_invert.mask;
+            break;
+
+        case Setting_MotorFaultsEnable:
+            value = settings.motor_fault_enable.mask;
+            break;
+
+        case Setting_MotorFaultsInvert:
+            value = settings.motor_fault_invert.mask;
+            break;
+
+        default:
+            break;
+    }
+
+    return value & system_axis_mask();
+}
 
 static status_code_t validate_pulse_width (float max_rate, float steps_per_mm, float pulse_width)
 {
@@ -619,7 +786,7 @@ static status_code_t set_pulse_width (setting_id_t id, float value)
     do {
         idx--;
 #if N_AXIS > 3
-        if(bit_isfalse(settings.steppers.is_rotary.mask, bit(idx)))
+        if(system_n_axis() > 3 && bit_isfalse(settings.steppers.is_rotary.mask, bit(idx)))
 #endif
             status = validate_pulse_width(settings.axis[idx].max_rate, settings.axis[idx].steps_per_mm, value);
     } while(idx && status == Status_OK);
@@ -656,15 +823,6 @@ static status_code_t set_ganged_dir_invert (setting_id_t id, uint_fast16_t int_v
         return Status_SettingDisabled;
 
     settings.steppers.ganged_dir_invert.mask = int_value & hal.stepper.get_ganged(false).mask;
-
-    return Status_OK;
-}
-
-static status_code_t set_stepper_energize_mask (setting_id_t id, uint_fast16_t int_value)
-{
-    settings.steppers.energize.mask = int_value;
-
-    hal.stepper.enable(settings.steppers.energize, true);
 
     return Status_OK;
 }
@@ -738,17 +896,26 @@ static status_code_t set_pwm_mode (setting_id_t id, uint_fast16_t int_value)
 static status_code_t set_pwm_options (setting_id_t id, uint_fast16_t int_value)
 {
     if(int_value & 0b0001) {
-        if(int_value > 0b1111)
+#if N_SPINDLE > 1
+        if(int_value > 0b11111)
             return Status_SettingValueOutOfRange;
+#else
+        if(int_value > 0b01111)
+            return Status_SettingValueOutOfRange;
+#endif
         settings.pwm_spindle.flags.pwm_disable = Off;
-        settings.pwm_spindle.flags.enable_rpm_controlled = !!(int_value & 0b0010);
-        settings.pwm_spindle.flags.laser_mode_disable = !!(int_value & 0b0100);
-        settings.pwm_spindle.flags.pwm_ramped = !!(int_value & 0b1000);
+        settings.pwm_spindle.flags.enable_rpm_controlled = !!(int_value & 0b00010);
+        settings.pwm_spindle.flags.laser_mode_disable = !!(int_value & 0b00100);
+        settings.pwm_spindle.flags.pwm_ramped = !!(int_value & 0b01000);
+#if N_SPINDLE > 1
+        settings.pwm_spindle.flags.ignore_delays = !!(int_value & 0b10000);
+#endif
     } else {
         settings.pwm_spindle.flags.pwm_disable = On;
         settings.pwm_spindle.flags.enable_rpm_controlled =
          settings.pwm_spindle.flags.laser_mode_disable =
-          settings.pwm_spindle.flags.pwm_ramped = Off;
+          settings.pwm_spindle.flags.pwm_ramped =
+           settings.pwm_spindle.flags.ignore_delays = Off;
     }
 
     return Status_OK;
@@ -981,14 +1148,6 @@ static status_code_t set_restore_overrides (setting_id_t id, uint_fast16_t int_v
 
 #endif // NO_SAFETY_DOOR_SUPPORT
 
-static status_code_t set_homing_cycle (setting_id_t id, uint_fast16_t int_value)
-{
-    settings.homing.cycle[id - Setting_HomingCycle_1].mask = int_value;
-    limits_set_homing_axes();
-
-    return Status_OK;
-}
-
 static status_code_t set_homing_pulloff (setting_id_t id, float value)
 {
     settings.homing.pulloff = value;
@@ -1000,7 +1159,7 @@ static status_code_t set_homing_pulloff (setting_id_t id, float value)
 
 static status_code_t set_homing_feedrates (setting_id_t id, float value)
 {
-    uint_fast8_t idx = N_AXIS;
+    uint_fast8_t idx = system_n_axis();
 
     if(!settings.homing.flags.per_axis_feedrates) switch(id) {
 
@@ -1062,6 +1221,18 @@ static status_code_t set_homing_enable (setting_id_t id, uint_fast16_t int_value
     return Status_OK;
 }
 
+#if N_AXIS > 3
+static status_code_t set_rotary_options (setting_id_t id, uint_fast16_t int_value)
+{
+    if((settings.flags.rotary_fix_enable = int_value != 0))
+        settings.flags.revert_metric_conversion = !!(int_value & 0b10);
+    else
+        settings.flags.revert_metric_conversion = Off;
+
+    return Status_OK;
+}
+#endif
+
 static status_code_t set_sleep_enable (setting_id_t id, uint_fast16_t int_value)
 {
     settings.flags.sleep_enable = int_value != 0;
@@ -1073,6 +1244,7 @@ static status_code_t set_hold_actions (setting_id_t id, uint_fast16_t int_value)
 {
     settings.flags.disable_laser_during_hold = bit_istrue(int_value, bit(0));
     settings.flags.restore_after_feed_hold = bit_istrue(int_value, bit(1));
+    settings.flags.set_rpm_0_during_hold = bit_istrue(int_value, bit(2));
 
     return Status_OK;
 }
@@ -1327,9 +1499,9 @@ FLASHMEM static status_code_t set_axis_setting (setting_id_t setting, float valu
                     sys.home_position[idx] *= comp;
                     sys.probe_position[idx] *= comp;
                     sys.tlo_reference[idx] *= comp;
-                    sync_position();
                 }
                 settings.axis[idx].steps_per_mm = value;
+                sync_position();
             }
             break;
 
@@ -1504,25 +1676,18 @@ FLASHMEM static uint32_t get_int (setting_id_t id)
 
     switch(id) {
 
-#if COMPATIBILITY_LEVEL > 2
-        case Setting_InvertStepperEnable:
-            value = settings.steppers.enable_invert.mask ? 0 : 1;
-            break;
-#endif
-
-#if COMPATIBILITY_LEVEL > 1
-        case Setting_LimitPinsInvertMask:
-            value = settings.limits.invert.mask == DEFAULT_LIMIT_SIGNALS_INVERT_MASK ? 0 : 1;
-            break;
-#endif
-
         case Setting_SpindlePWMOptions:
             value = settings.pwm_spindle.flags.pwm_disable
                      ? 0
                      : (0b0001 |
-                        (settings.pwm_spindle.flags.enable_rpm_controlled ? 0b0010 : 0) |
-                         (settings.pwm_spindle.flags.laser_mode_disable ? 0b0100 : 0) |
-                          (settings.pwm_spindle.flags.pwm_ramped ? 0b1000 : 0));
+                        (settings.pwm_spindle.flags.enable_rpm_controlled ? 0b00010 : 0) |
+                         (settings.pwm_spindle.flags.laser_mode_disable ? 0b00100 : 0) |
+                          (settings.pwm_spindle.flags.pwm_ramped ? 0b01000 : 0) |
+                           (settings.pwm_spindle.flags.ignore_delays ? 0b10000 : 0));
+            break;
+
+        case Setting_HomingDirMask:
+            value = settings.homing.dir_mask.mask & system_axis_mask();
             break;
 
         case Setting_Mode:
@@ -1607,15 +1772,6 @@ FLASHMEM static uint32_t get_int (setting_id_t id)
             value = settings.parking.flags.value;
             break;
 
-        case Setting_HomingCycle_1:
-        case Setting_HomingCycle_2:
-        case Setting_HomingCycle_3:
-        case Setting_HomingCycle_4:
-        case Setting_HomingCycle_5:
-        case Setting_HomingCycle_6:
-            value = settings.homing.cycle[id - Setting_HomingCycle_1].mask;
-            break;
-
         case Setting_RestoreOverrides:
             value = settings.flags.restore_overrides;
             break;
@@ -1625,7 +1781,7 @@ FLASHMEM static uint32_t get_int (setting_id_t id)
             break;
 
         case Setting_HoldActions:
-            value = settings.flags.disable_laser_during_hold | (settings.flags.restore_after_feed_hold << 1);
+            value = settings.flags.disable_laser_during_hold | (settings.flags.restore_after_feed_hold << 1) | (settings.flags.set_rpm_0_during_hold << 2);
             break;
 
         case Setting_ForceInitAlarm:
@@ -1709,6 +1865,11 @@ FLASHMEM static uint32_t get_int (setting_id_t id)
             value = settings.flags.m98_prescan_enable;
             break;
 
+#if N_AXIS > 3
+        case Setting_RotaryOptions:
+            value = settings.flags.rotary_fix_enable | (settings.flags.revert_metric_conversion << 1);
+            break;
+#endif
         default:
             break;
     }
@@ -1723,7 +1884,7 @@ inline static uint8_t get_decimal_places (const char *format)
     return dp ? strchr(format, '\0') - dp - 1 : 1;
 }
 
-char *setting_get_value (const setting_detail_t *setting, uint_fast16_t offset)
+FLASHMEM char *setting_get_value (const setting_detail_t *setting, uint_fast16_t offset)
 {
     char *value = NULL;
 
@@ -1780,7 +1941,7 @@ char *setting_get_value (const setting_detail_t *setting, uint_fast16_t offset)
 
             setting_id_t id = (setting_id_t)(setting->id + offset);
 
-            switch(setting->datatype) {
+            if(setting->get_value) switch(setting->datatype) {
 
                 case Format_Decimal:
                     value = ftoa(((setting_get_float_ptr)(setting->get_value))(id), get_decimal_places(setting->format));
@@ -1805,7 +1966,7 @@ char *setting_get_value (const setting_detail_t *setting, uint_fast16_t offset)
     return value;
 }
 
-uint32_t setting_get_int_value (const setting_detail_t *setting, uint_fast16_t offset)
+FLASHMEM uint32_t setting_get_int_value (const setting_detail_t *setting, uint_fast16_t offset)
 {
     uint32_t value = 0;
 
@@ -1861,34 +2022,21 @@ uint32_t setting_get_int_value (const setting_detail_t *setting, uint_fast16_t o
     return value;
 }
 
-float setting_get_float_value (const setting_detail_t *setting, uint_fast16_t offset)
+FLASHMEM float setting_get_float_value (const setting_detail_t *setting, uint_fast16_t offset)
 {
     float value = NAN;
 
-    if(setting && setting->datatype == Format_Decimal) switch(setting->type) {
-
-        case Setting_NonCore:
-        case Setting_IsExtended:
-        case Setting_IsLegacy:
-        case Setting_IsExpanded:
-            value = *((float *)(setting->value));
-            break;
-
-        case Setting_NonCoreFn:
-        case Setting_IsExtendedFn:
-        case Setting_IsLegacyFn:
-        case Setting_IsExpandedFn:
+    if(setting && setting->datatype == Format_Decimal) {
+        if(setting_isfntype(setting->type))
             value = ((setting_get_float_ptr)(setting->get_value))((setting_id_t)(setting->id + offset));
-            break;
-
-        default:
-            break;
+        else
+            value = *((float *)(setting->value));
     }
 
     return value;
 }
 
-static bool is_group_available (const setting_detail_t *setting, uint_fast16_t offset)
+FLASHMEM static bool is_group_available (const setting_detail_t *setting, uint_fast16_t offset)
 {
     return settings_is_group_available(setting->group);
 }
@@ -1946,6 +2094,24 @@ FLASHMEM static bool is_setting_available (const setting_detail_t *setting, uint
             available = spindle_get_caps(false).variable;
             break;
 
+#if N_AXIS > 3
+        case Setting_HomingCycle_4:
+        case Settings_RotaryAxes:
+        case Setting_RotaryWrap:
+            available = system_n_axis() > 3;
+            break;
+#endif
+#if N_AXIS > 4
+        case Setting_HomingCycle_5:
+            available = system_n_axis() > 4;
+            break;
+#endif
+#if N_AXIS > 5
+        case Setting_HomingCycle_6:
+            available = system_n_axis() > 5;
+            break;
+#endif
+
         case Setting_SleepEnable:
             available = SLEEP_DURATION > 0.0f;
             break;
@@ -1959,12 +2125,14 @@ FLASHMEM static bool is_setting_available (const setting_detail_t *setting, uint
             available = !hal.driver_cap.atc;
             break;
 
+        case Setting_AxisAutoSquareOffset:
+            available = hal.stepper.get_ganged && bit_istrue(hal.stepper.get_ganged(true).mask, bit(offset));
+            break;
+
         case Setting_DualAxisLengthFailPercent:
         case Setting_DualAxisLengthFailMin:
         case Setting_DualAxisLengthFailMax:
-        case Setting_AxisAutoSquareOffset:
             available = hal.stepper.get_ganged && hal.stepper.get_ganged(true).mask != 0;
-//            available = hal.stepper.get_ganged && bit_istrue(hal.stepper.get_ganged(true).mask, setting->id - Setting_AxisAutoSquareOffset);
             break;
 
         case Setting_AxisHomingFeedRate:
@@ -2050,25 +2218,115 @@ FLASHMEM static bool is_setting_available (const setting_detail_t *setting, uint
     return available;
 }
 
+// Sanity check of settings, board map could have been changed...
+FLASHMEM static void sanity_check (void)
+{
+#if LATHE_UVW_OPTION
+    settings.mode = Mode_Lathe;
+#else
+    if(settings.mode == Mode_Laser && !spindle_get_caps(false).laser)
+        settings.mode = Mode_Standard;
+#endif
+
+    if(settings.planner_buffer_blocks < 30 || settings.planner_buffer_blocks > 1000)
+        settings.planner_buffer_blocks = 35;
+
+    if(!hal.driver_cap.spindle_encoder)
+        settings.spindle.ppr = 0;
+
+    if(settings.steppers.pulse_microseconds < hal.step_us_min)
+        settings.steppers.pulse_microseconds = hal.step_us_min;
+
+    if(hal.max_step_rate) {
+
+        uint_fast8_t idx = N_AXIS;
+        do {
+            idx--;
+#if N_AXIS > 3
+            if(bit_isfalse(settings.steppers.is_rotary.mask, bit(idx)) &&
+#else
+            if(
+#endif
+            (settings.axis[idx].max_rate * settings.axis[idx].steps_per_mm) / 60.0f > (float)hal.max_step_rate)
+                settings.axis[idx].max_rate = (float)hal.max_step_rate * 60.0f / settings.axis[idx].steps_per_mm;
+            // TODO: warn if changed?
+        } while(idx);
+    }
+
+    if(settings.tool_change.mode > ToolChange_Ignore) {
+        settings.tool_change.mode = ToolChange_SemiAutomatic;
+        settings.flags.tool_change_fast_pulloff = On;
+    }
+
+    settings.probe.probe2_auto_select &= hal.driver_cap.probe2 && hal.probe.select;
+    settings.probe.toolsetter_auto_select &= hal.driver_cap.toolsetter && hal.probe.select;
+
+    if(SLEEP_DURATION <= 0.0f)
+        settings.flags.sleep_enable = Off;
+
+#if COMPATIBILITY_LEVEL > 1 && DEFAULT_DISABLE_G92_PERSISTENCE
+    settings.flags.g92_is_volatile = On;
+#endif
+
+#if COMPATIBILITY_LEVEL > 2
+    if(settings.steppers.enable_invert.mask)
+        settings.steppers.enable_invert.mask = AXES_BITMASK;
+#endif
+
+#if N_AXIS > 3
+    settings.steppers.rotary_wrap.mask &= settings.steppers.is_rotary.mask;
+#endif
+
+#if N_SPINDLE == 1
+    settings.pwm_spindle.flags.ignore_delays = Off;
+#endif
+
+    settings.control_invert.mask |= limits_override.mask;
+    settings.control_disable_pullup.mask &= ~limits_override.mask;
+}
+
+// Read global settings from persistent storage.
+// Checks version-byte of non-volatile storage and global settings copy.
+FLASHMEM bool read_global_settings (void)
+{
+    bool ok = hal.nvs.type != NVS_None && SETTINGS_VERSION == hal.nvs.get_byte(0) && hal.nvs.memcpy_from_nvs((uint8_t *)&settings, NVS_ADDR_GLOBAL, sizeof(settings_t), true) == NVS_TransferResult_OK;
+
+    sanity_check();
+
+    return ok && settings.version.id == SETTINGS_VERSION;
+}
+
+// Write global settings to persistent storage
+FLASHMEM static void _settings_write_global (void)
+{
+    if(override_backup.valid)
+        restore_override_backup();
+
+    settings.flags.compatibility_level = COMPATIBILITY_LEVEL;
+
+    if(hal.nvs.type != NVS_None)
+        hal.nvs.memcpy_to_nvs(NVS_ADDR_GLOBAL, (uint8_t *)&settings, sizeof(settings_t), true);
+}
+
 PROGMEM static const setting_detail_t setting_detail[] = {
      { Setting_PulseMicroseconds, Group_Stepper, "Step pulse time", "microseconds", Format_Decimal, "#0.0", step_us_min, NULL, Setting_IsLegacyFn, set_pulse_width, get_float, NULL },
      { Setting_StepperIdleLockTime, Group_Stepper, "Step idle delay", "milliseconds", Format_Int16, "####0", NULL, "65535", Setting_IsLegacy, &settings.steppers.idle_lock_time, NULL, NULL },
-     { Setting_StepInvertMask, Group_Stepper, "Step pulse invert", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacy, &settings.steppers.step_invert.mask, NULL, NULL },
-     { Setting_DirInvertMask, Group_Stepper, "Step direction invert", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacy, &settings.steppers.dir_invert.mask, NULL, NULL },
+     { Setting_StepInvertMask, Group_Stepper, "Step pulse invert", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
+     { Setting_DirInvertMask, Group_Stepper, "Step direction invert", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
 #if COMPATIBILITY_LEVEL <= 2
-     { Setting_InvertStepperEnable, Group_Stepper, "Invert stepper enable output(s)", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacy, &settings.steppers.enable_invert.mask, NULL, NULL },
+     { Setting_InvertStepperEnable, Group_Stepper, "Invert stepper enable output(s)", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
 #else
-     { Setting_InvertStepperEnable, Group_Stepper, "Invert stepper enable output", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_enable_invert_mask, get_int, NULL },
+     { Setting_InvertStepperEnable, Group_Stepper, "Invert stepper enable output", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
 #endif
 #if COMPATIBILITY_LEVEL <= 1
-     { Setting_LimitPinsInvertMask, Group_Limits, "Invert limit inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacy, &settings.limits.invert.mask, NULL, NULL },
+     { Setting_LimitPinsInvertMask, Group_Limits, "Invert limit inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
 #else
-     { Setting_LimitPinsInvertMask, Group_Limits, "Invert limit inputs", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_limits_invert_mask, get_int, NULL },
+     { Setting_LimitPinsInvertMask, Group_Limits, "Invert limit inputs", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
 #endif
      { Setting_InvertProbePin, Group_Probing, "Invert probe inputs", NULL, Format_Bitfield, probe_signals, NULL, NULL, Setting_IsLegacyFn, set_probe_invert, get_int, is_setting_available },
      { Setting_SpindlePWMBehaviour, Group_Spindle, "Deprecated", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_pwm_mode, get_int, is_setting_available },
      { Setting_GangedDirInvertMask, Group_Stepper, "Ganged axes direction invert", NULL, Format_Bitfield, ganged_axes, NULL, NULL, Setting_IsExtendedFn, set_ganged_dir_invert, get_int, is_setting_available },
-     { Setting_SpindlePWMOptions, Group_Spindle, "PWM spindle options", NULL, Format_XBitfield, "Enable,RPM controls spindle enable signal,Disable laser mode capability,Enable ramping", NULL, NULL, Setting_IsExtendedFn, set_pwm_options, get_int, is_setting_available },
+     { Setting_SpindlePWMOptions, Group_Spindle, "PWM spindle options", NULL, Format_XBitfield, "Enable,RPM controls spindle enable signal,Disable laser mode capability,Enable ramping" PWM_SPINDLE_NO_DELAYS, NULL, NULL, Setting_IsExtendedFn, set_pwm_options, get_int, is_setting_available },
 #if COMPATIBILITY_LEVEL <= 1
      { Setting_StatusReportMask, Group_General, "Status report options", NULL, Format_Bitfield, "Position in machine coordinate,Buffer state,Line numbers,Feed & speed,Pin state,Work coordinate offset,Overrides,Probe coordinates,Buffer sync on WCO change,Parser state,Alarm substatus,Run substatus,Enable when homing,Distance-to-go", NULL, NULL, Setting_IsExtendedFn, set_report_mask, get_int, NULL },
 #else
@@ -2081,7 +2339,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
      { Setting_CoolantInvertMask, Group_Coolant, "Invert coolant outputs", NULL, Format_Bitfield, coolant_signals, NULL, NULL, Setting_IsExtended, &settings.coolant.invert.mask, NULL, NULL },
      { Setting_SpindleInvertMask, Group_Spindle, "Invert spindle signals", NULL, Format_Bitfield, spindle_signals, NULL, NULL, Setting_IsExtendedFn, set_spindle_invert, get_int, is_setting_available, { .reboot_required = On } },
      { Setting_ControlPullUpDisableMask, Group_ControlSignals, "Pullup disable control inputs", NULL, Format_Bitfield, control_signals, NULL, NULL, Setting_IsExtendedFn, set_control_disable_pullup, get_int, is_setting_available },
-     { Setting_LimitPullUpDisableMask, Group_Limits, "Pullup disable limit inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtended, &settings.limits.disable_pullup.mask, NULL, NULL },
+     { Setting_LimitPullUpDisableMask, Group_Limits, "Pullup disable limit inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, NULL },
      { Setting_ProbePullUpDisable, Group_Probing, "Pullup disable probe inputs", NULL, Format_Bitfield, probe_signals, NULL, NULL, Setting_IsLegacyFn, set_probe_disable_pullup, get_int, is_setting_available },
      { Setting_SoftLimitsEnable, Group_Limits, "Soft limits enable", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_soft_limits_enable, get_int, NULL },
 #if COMPATIBILITY_LEVEL <= 1
@@ -2098,7 +2356,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
 #else
      { Setting_HomingEnable, Group_Homing, "Homing cycle enable", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsLegacyFn, set_homing_enable, get_int, NULL },
 #endif
-     { Setting_HomingDirMask, Group_Homing, "Homing direction invert", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacy, &settings.homing.dir_mask.value, NULL, NULL },
+     { Setting_HomingDirMask, Group_Homing, "Homing direction invert", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsLegacyFn, set_axis_mask, get_axis_mask, NULL },
      { Setting_HomingFeedRate, Group_Homing, "Homing locate feed rate", "mm/min", Format_Decimal, "#####0.0", NULL, NULL, Setting_IsLegacyFn, set_homing_feedrates, get_float, NULL },
      { Setting_HomingSeekRate, Group_Homing, "Homing search seek rate", "mm/min", Format_Decimal, "#####0.0", NULL, NULL, Setting_IsLegacyFn, set_homing_feedrates, get_float, NULL },
      { Setting_HomingDebounceDelay, Group_Homing, "Homing switch debounce delay", "milliseconds", Format_Int16, "##0", NULL, NULL, Setting_IsLegacy, &settings.homing.debounce_delay, NULL, NULL },
@@ -2114,24 +2372,24 @@ PROGMEM static const setting_detail_t setting_detail[] = {
      { Setting_PWMOffValue, Group_Spindle, "Spindle PWM off value", "percent", Format_Decimal, "##0.0", NULL, "100", Setting_IsExtended, &settings.pwm_spindle.pwm_off_value, NULL, is_setting_available },
      { Setting_PWMMinValue, Group_Spindle, "Spindle PWM min value", "percent", Format_Decimal, "##0.0", NULL, "100", Setting_IsExtended, &settings.pwm_spindle.pwm_min_value, NULL, is_setting_available },
      { Setting_PWMMaxValue, Group_Spindle, "Spindle PWM max value", "percent", Format_Decimal, "##0.0", NULL, "100", Setting_IsExtended, &settings.pwm_spindle.pwm_max_value, NULL, is_setting_available },
-     { Setting_SteppersEnergize, Group_Stepper, "Steppers to keep enabled", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_stepper_energize_mask, get_int, NULL },
+     { Setting_SteppersEnergize, Group_Stepper, "Steppers to keep enabled", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, NULL },
      { Setting_SpindlePPR, Group_Spindle, "Spindle pulses per revolution (PPR)", NULL, Format_Int16, "###0", NULL, NULL, Setting_IsExtended, &settings.spindle.ppr, NULL, is_setting_available, { .reboot_required = On } },
      { Setting_EnableLegacyRTCommands, Group_General, "Enable legacy RT commands", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsExtendedFn, set_enable_legacy_rt_commands, get_int, NULL },
      { Setting_JogSoftLimited, Group_Jogging, "Limit jog commands", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsExtendedFn, set_jog_soft_limited, get_int, NULL },
      { Setting_ParkingEnable, Group_SafetyDoor, "Parking cycle", NULL, Format_XBitfield, "Enable,Deactivate upon init,Enable parking override control", NULL, NULL, Setting_IsExtendedFn, set_parking_enable, get_int, NULL },
      { Setting_ParkingAxis, Group_SafetyDoor, "Parking axis", NULL, Format_RadioButtons, "X,Y,Z", NULL, NULL, Setting_IsExtended, &settings.parking.axis, NULL, NULL },
      { Setting_HomingLocateCycles, Group_Homing, "Homing passes", NULL, Format_Int8, "##0", "1", "128", Setting_IsExtended, &settings.homing.locate_cycles, NULL, NULL },
-     { Setting_HomingCycle_1, Group_Homing, "Axes homing, first phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_homing_cycle, get_int, NULL },
-     { Setting_HomingCycle_2, Group_Homing, "Axes homing, second phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_homing_cycle, get_int, NULL },
-     { Setting_HomingCycle_3, Group_Homing, "Axes homing, third phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_homing_cycle, get_int, NULL },
+     { Setting_HomingCycle_1, Group_Homing, "Axes homing, first phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, NULL },
+     { Setting_HomingCycle_2, Group_Homing, "Axes homing, second phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, NULL },
+     { Setting_HomingCycle_3, Group_Homing, "Axes homing, third phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, NULL },
 #if N_AXIS > 3
-     { Setting_HomingCycle_4, Group_Homing, "Axes homing, fourth phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_homing_cycle, get_int, NULL },
+     { Setting_HomingCycle_4, Group_Homing, "Axes homing, fourth phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
 #endif
 #if N_AXIS > 4
-     { Setting_HomingCycle_5, Group_Homing, "Axes homing, fifth phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_homing_cycle, get_int, NULL },
+     { Setting_HomingCycle_5, Group_Homing, "Axes homing, fifth phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
 #endif
 #if N_AXIS > 5
-     { Setting_HomingCycle_6, Group_Homing, "Axes homing, sixth phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_homing_cycle, get_int, NULL },
+     { Setting_HomingCycle_6, Group_Homing, "Axes homing, sixth phase", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
 #endif
      { Setting_ParkingPulloutIncrement, Group_SafetyDoor, "Parking pull-out distance", "mm", Format_Decimal, "###0.0", NULL, NULL, Setting_IsExtended, &settings.parking.pullout_increment, NULL, NULL },
      { Setting_ParkingPulloutRate, Group_SafetyDoor, "Parking pull-out rate", "mm/min", Format_Decimal, "###0.0", NULL, NULL, Setting_IsExtended, &settings.parking.pullout_rate, NULL, NULL },
@@ -2142,7 +2400,7 @@ PROGMEM static const setting_detail_t setting_detail[] = {
      { Setting_DoorOptions, Group_SafetyDoor, "Safety door options", NULL, Format_Bitfield, door_options, NULL, NULL, Setting_IsExtended, &settings.safety_door.flags.value, NULL, is_setting_available },
 #endif
      { Setting_SleepEnable, Group_General, "Sleep enable", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsExtendedFn, set_sleep_enable, get_int, is_setting_available },
-     { Setting_HoldActions, Group_General, "Feed hold actions", NULL, Format_Bitfield, "Disable laser during hold,Restore spindle and coolant state on resume", NULL, NULL, Setting_IsExtendedFn, set_hold_actions, get_int, NULL },
+     { Setting_HoldActions, Group_General, "Feed hold actions", NULL, Format_Bitfield, "Disable laser during hold,Restore spindle and coolant state on resume,Set RPM to minimum (except for laser M4)", NULL, NULL, Setting_IsExtendedFn, set_hold_actions, get_int, NULL },
      { Setting_ForceInitAlarm, Group_General, "Force init alarm", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsExtendedFn, set_force_initialization_alarm, get_int, NULL },
      { Setting_ProbingFlags, Group_Probing, "Probing options", NULL, Format_Bitfield, probing_options, NULL, NULL, Setting_IsExtendedFn, set_probe_flags, get_int, is_setting_available },
 #if ENABLE_SPINDLE_LINEARIZATION
@@ -2188,11 +2446,11 @@ PROGMEM static const setting_detail_t setting_detail[] = {
      { Setting_DisableG92Persistence, Group_General, "Disable G92 persistence", NULL, Format_Bool, NULL, NULL, NULL, Setting_IsExtendedFn, set_g92_disable_persistence, get_int, NULL },
 #endif
 #if N_AXIS > 3
-     { Settings_RotaryAxes, Group_Stepper, "Rotary axes", NULL, Format_Bitfield, rotary_axes, NULL, NULL, Setting_IsExtendedFn, set_rotary_axes, get_int, NULL },
+     { Settings_RotaryAxes, Group_Stepper, "Rotary axes", NULL, Format_Bitfield, rotary_axes, NULL, NULL, Setting_IsExtendedFn, set_rotary_axes, get_int, is_setting_available },
 #endif
-     { Setting_DoorSpindleOnDelay, Group_SafetyDoor, "Spindle on delay", "s", Format_Decimal, "#0.0", "0.5", "20", Setting_IsExtended, &settings.safety_door.spindle_on_delay, NULL, NULL, { .allow_null = On } },
+     { Setting_DoorSpindleOnDelay, Group_SafetyDoor, "Spindle on delay", "s", Format_Decimal, "#0.0", "0.5", "60", Setting_IsExtended, &settings.safety_door.spindle_on_delay, NULL, NULL, { .allow_null = On } },
      { Setting_DoorCoolantOnDelay, Group_SafetyDoor, "Coolant on delay", "s", Format_Decimal, "#0.0", "0.5", "20", Setting_IsExtended, &settings.safety_door.coolant_on_delay, NULL, NULL, { .allow_null = On } },
-     { Setting_SpindleOnDelay, Group_Spindle, "Spindle on delay", "s", Format_Decimal, "#0.0", "0.5", "20", Setting_IsExtendedFn, set_float, get_float, is_setting_available, { .allow_null = On } },
+     { Setting_SpindleOnDelay, Group_Spindle, "Spindle on delay", "s", Format_Decimal, "#0.0", "0.5", "60", Setting_IsExtendedFn, set_float, get_float, is_setting_available, { .allow_null = On } },
      { Setting_SpindleType, Group_Spindle, "Default spindle", NULL, Format_RadioButtons, spindle_types, NULL, NULL, Setting_IsExtendedFn, set_default_spindle, get_int, is_setting_available, { .reboot_required = On } },
      { Setting_PlannerBlocks, Group_General, "Planner buffer blocks", NULL, Format_Int16, "####0", "30", "1000", Setting_IsExtended, &settings.planner_buffer_blocks, NULL, NULL, { .reboot_required = On } },
      { Setting_AutoReportInterval, Group_General, "Autoreport interval", "ms", Format_Int16, "###0", "100", "1000", Setting_IsExtendedFn, set_report_interval, get_int, NULL, { .reboot_required = On, .allow_null = On } },
@@ -2209,19 +2467,22 @@ PROGMEM static const setting_detail_t setting_detail[] = {
      { Setting_RGB_StripLengt0, Group_AuxPorts, "LED strip 1 length", NULL, Format_Int8, "##0", NULL, "255", Setting_NonCore, &settings.rgb_strip.length0, NULL, is_setting_available },
      { Setting_RGB_StripLengt1, Group_AuxPorts, "LED strip 2 length", NULL, Format_Int8, "##0", NULL, "255", Setting_NonCore, &settings.rgb_strip.length1, NULL, is_setting_available },
 #if N_AXIS > 3
-     { Setting_RotaryWrap, Group_Stepper, "Fast rotary go to G28", NULL, Format_Bitfield, rotary_axes, NULL, NULL, Setting_IsExtendedFn, set_rotary_wrap_axes, get_int, NULL },
+     { Setting_RotaryWrap, Group_Stepper, "Fast rotary go to G28", NULL, Format_Bitfield, rotary_axes, NULL, NULL, Setting_IsExtendedFn, set_rotary_wrap_axes, get_int, is_setting_available },
 #endif
-     { Setting_SpindleOffDelay, Group_Spindle, "Spindle off delay", "s", Format_Decimal, "#0.0", "0.5", "20", Setting_IsExtendedFn, set_float, get_float, is_setting_available, { .allow_null = On } },
+     { Setting_SpindleOffDelay, Group_Spindle, "Spindle off delay", "s", Format_Decimal, "#0.0", "0.5", "60", Setting_IsExtendedFn, set_float, get_float, is_setting_available, { .allow_null = On } },
      { Setting_FSOptions, Group_General, "File systems options", NULL, Format_Bitfield, fs_options, NULL, NULL, Setting_IsExtended, &settings.fs_options.mask, NULL, is_setting_available },
-     { Setting_HomePinsInvertMask, Group_Limits, "Invert home inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtended, &settings.home_invert.mask, NULL, is_setting_available },
+     { Setting_HomePinsInvertMask, Group_Limits, "Invert home inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
      { Setting_CoolantOnDelay, Group_Coolant, "Coolant on delay", "s", Format_Decimal, "#0.0", "0.5", "20", Setting_IsExtendedFn, set_float, get_float, is_setting_available, { .allow_null = On } },
-     { Setting_MotorWarningsEnable, Group_Stepper, "Motor warning inputs enable", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtended, &settings.motor_warning_enable, NULL, is_setting_available },
-     { Setting_MotorWarningsInvert, Group_Stepper, "Invert motor warning inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtended, &settings.motor_warning_invert, NULL, is_setting_available },
-     { Setting_MotorFaultsEnable, Group_Stepper, "Motor fault inputs enable", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtended, &settings.motor_fault_enable, NULL, is_setting_available },
-     { Setting_MotorFaultsInvert, Group_Stepper, "Invert motor fault inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtended, &settings.motor_fault_invert, NULL, is_setting_available },
+     { Setting_MotorWarningsEnable, Group_Stepper, "Motor warning inputs enable", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
+     { Setting_MotorWarningsInvert, Group_Stepper, "Invert motor warning inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
+     { Setting_MotorFaultsEnable, Group_Stepper, "Motor fault inputs enable", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
+     { Setting_MotorFaultsInvert, Group_Stepper, "Invert motor fault inputs", NULL, Format_AxisMask, NULL, NULL, NULL, Setting_IsExtendedFn, set_axis_mask, get_axis_mask, is_setting_available },
      { Setting_ResetActions, Group_General, "Reset actions", NULL, Format_Bitfield, "Clear homed status if position was lost,Clear offsets (except G92),Clear rapids override,Clear feed override", NULL, NULL, Setting_IsExtendedFn, set_reset_actions, get_int, NULL },
      { Setting_StepperEnableDelay, Group_Stepper, "Stepper enable delay", "ms", Format_Int16, "##0", NULL, "500", Setting_IsExtended, &settings.stepper_enable_delay, NULL, NULL },
-     { Setting_SubroutineOptions, Group_General, "Subroutine options", NULL, Format_Bitfield, "Prescan for internal M98 subroutines", NULL, NULL, Setting_IsExtendedFn, set_suboptions, get_int, is_setting_available }
+     { Setting_SubroutineOptions, Group_General, "Subroutine options", NULL, Format_Bitfield, "Prescan for internal M98 subroutines", NULL, NULL, Setting_IsExtendedFn, set_suboptions, get_int, is_setting_available },
+#if N_AXIS > 3
+     { Setting_RotaryOptions, Group_General, "Rotary options", NULL, Format_XBitfield, "Fix feedrate,Revert metric conversion", NULL, NULL, Setting_IsExpandedFn, set_rotary_options, get_int, NULL },
+#endif
 };
 
 PROGMEM static const setting_descr_t setting_descr[] = {
@@ -2325,7 +2586,7 @@ PROGMEM static const setting_descr_t setting_descr[] = {
     { Setting_RestoreOverrides, "Restore overrides to default values at program end." },
 #ifndef NO_SAFETY_DOOR_SUPPORT
     { Setting_DoorOptions, "Ignore when idle: disregard door signal in IDLE state to allow jogging etc. Available when controller has door input.\n"
-    		               "Keep coolant state on open: do not turn off coolant if on." },
+                           "Keep coolant state on open: do not turn off coolant if on." },
 #endif
     { Setting_SleepEnable, "Enable sleep mode." },
     { Setting_HoldActions, "Actions taken during feed hold and on resume from feed hold." },
@@ -2430,6 +2691,11 @@ PROGMEM static const setting_descr_t setting_descr[] = {
     { Setting_CoolantOnDelay, "Delay to allow coolant to start. 0 or 0.5 - 20s." },
     { Setting_ResetActions, "Controls actions taken on a soft reset." },
     { Setting_StepperEnableDelay, "Delay from stepper enable to first step output. The driver typically adds ~2ms to this." },
+#if N_AXIS > 3
+     { Setting_RotaryOptions, "`Fix feedrate` changes feedrate to inverse time mode for combined angular and linear moves.\\n"
+                              "'Revert metric conversion' reverts feedrate conversion from imperial to metric for angular moves."},
+#endif
+
 //    { Setting_SubroutineOptions, "Enable prescan for internal M98 subroutines." }
 /*
     { Setting_MotorWarningsEnable, "Motor warning enable" },
@@ -2439,7 +2705,7 @@ PROGMEM static const setting_descr_t setting_descr[] = {
 */
 };
 
-static setting_details_t setting_details = {
+static setting_details_t global_settings = {
     .is_core = true,
     .groups = setting_group_detail,
     .n_groups = sizeof(setting_group_detail) / sizeof(setting_group_detail_t),
@@ -2447,33 +2713,70 @@ static setting_details_t setting_details = {
     .n_settings = sizeof(setting_detail) / sizeof(setting_detail_t),
     .descriptions = setting_descr,
     .n_descriptions = sizeof(setting_descr) / sizeof(setting_descr_t),
-    .save = settings_write_global
+    .save = _settings_write_global
 };
 
-static setting_details_t *settingsd = &setting_details;
+static setting_details_t *settingsd = &global_settings;
 
-void settings_register (setting_details_t *details)
+FLASHMEM bool settings_register (setting_details_t *details)
 {
-    settingsd->next = details;
-    settingsd = details;
+    uint_fast16_t idx;
+    bool ok = (details->is_core || (!!details->load && !!details->restore)) && !!details->save;
+
+    if(ok && (idx = details->n_settings)) do {
+        const setting_detail_t *setting = &details->settings[--idx];
+        ok = setting->type <= Setting_MaxType && !!setting->value && (!setting_isfntype(setting->type) || !!setting->get_value);
+    } while(idx && ok);
+
+    if(ok && (idx = details->n_descriptions)) do {
+        ok = !!details->descriptions[--idx].description;
+    } while(idx && ok);
+
+    if(ok && (idx = details->n_groups)) do {
+        const setting_group_detail_t *group = &details->groups[--idx];
+        ok = !!group->name && group->id != group->parent;
+    } while(idx && ok);
+
+    if(ok) {
+        settingsd->next = details;
+        settingsd = details;
+    }
+
+    return ok;
 }
 
-setting_details_t *settings_get_details (void)
+FLASHMEM setting_details_t *settings_get_details (void)
 {
-    return &setting_details;
+    return &global_settings;
+}
+
+FLASHMEM driver_settings_save_ptr settings_claim_save (driver_settings_save_ptr save)
+{
+    driver_settings_save_ptr save_org = global_settings.save;
+
+    if(save)
+        global_settings.save = save;
+
+    return save_org;
+}
+
+// Write global settings to persistent storage
+FLASHMEM void settings_write_global (void)
+{
+    global_settings.save();
 }
 
 /**/
 
 // Write build info to persistent storage
-void settings_write_build_info (char *line)
+FLASHMEM void settings_write_build_info (char *line)
 {
     if(hal.nvs.type != NVS_None)
         hal.nvs.memcpy_to_nvs(NVS_ADDR_BUILD_INFO, (uint8_t *)line, sizeof(stored_line_t), true);
 }
 
 // Read build info from persistent storage.
-bool settings_read_build_info(char *line)
+FLASHMEM bool settings_read_build_info(char *line)
 {
     if (!(hal.nvs.type != NVS_None && hal.nvs.memcpy_from_nvs((uint8_t *)line, NVS_ADDR_BUILD_INFO, sizeof(stored_line_t), true) == NVS_TransferResult_OK)) {
         settings_restore((settings_restore_t){ .build_info = On });
@@ -2483,7 +2786,7 @@ bool settings_read_build_info(char *line)
 }
 
 // Write startup line to persistent storage
-void settings_write_startup_line (uint8_t idx, char *line)
+FLASHMEM void settings_write_startup_line (uint8_t idx, char *line)
 {
     assert(idx < N_STARTUP_LINE);
 
@@ -2496,7 +2799,7 @@ void settings_write_startup_line (uint8_t idx, char *line)
 }
 
 // Read startup line to persistent storage.
-bool settings_read_startup_line (uint8_t idx, char *line)
+FLASHMEM bool settings_read_startup_line (uint8_t idx, char *line)
 {
     assert(idx < N_STARTUP_LINE);
 
@@ -2510,7 +2813,7 @@ bool settings_read_startup_line (uint8_t idx, char *line)
 }
 
 // Write selected coordinate data to persistent storage.
-void settings_write_coord_data (coord_system_id_t id, coord_system_data_t *data)
+FLASHMEM void settings_write_coord_data (coord_system_id_t id, coord_system_data_t *data)
 {
     assert(id <= N_CoordinateSystems);
 
@@ -2526,7 +2829,7 @@ void settings_write_coord_data (coord_system_id_t id, coord_system_data_t *data)
 }
 
 // Read selected coordinate data from persistent storage.
-bool settings_read_coord_data (coord_system_id_t id, coord_system_data_t *data)
+FLASHMEM bool settings_read_coord_data (coord_system_id_t id, coord_system_data_t *data)
 {
     assert(id <= N_CoordinateSystems);
 
@@ -2545,7 +2848,7 @@ bool settings_read_coord_data (coord_system_id_t id, coord_system_data_t *data)
 static tool_data_t tool_data[N_TOOLS + 1];
 
 // Write selected tool data to persistent storage.
-static bool settings_set_tool_data (tool_data_t *tool)
+FLASHMEM static bool settings_set_tool_data (tool_data_t *tool)
 {
     bool ok = tool->tool_id <= N_TOOLS;
 
@@ -2556,7 +2859,7 @@ static bool settings_set_tool_data (tool_data_t *tool)
 }
 
 // Read selected tool data from persistent storage.
-static tool_table_entry_t *settings_get_tool_data (tool_id_t tool_id)
+FLASHMEM static tool_table_entry_t *settings_get_tool_data (tool_id_t tool_id)
 {
     static tool_table_entry_t tool = {0};
 
@@ -2575,7 +2878,7 @@ static tool_table_entry_t *settings_get_tool_data (tool_id_t tool_id)
 }
 
 // Clear all tool data in persistent storage.
-static bool settings_clear_tool_data (void)
+FLASHMEM static bool settings_clear_tool_data (void)
 {
     uint_fast8_t idx;
 
@@ -2594,30 +2897,30 @@ static bool settings_clear_tool_data (void)
 static tool_data_t tool_data = {0};
 
 // Write selected tool data to persistent storage.
-static bool settings_set_tool_data (tool_data_t *tool_data)
+FLASHMEM static bool settings_set_tool_data (tool_data_t *tool_data)
 {
     return true;
 }
 
 // Read selected tool data from persistent storage.
-static tool_table_entry_t *settings_get_tool_data (tool_id_t tool_id)
+FLASHMEM static tool_table_entry_t *settings_get_tool_data (tool_id_t tool_id)
 {
     static tool_table_entry_t tool = {0};
 
-	if(tool_id <= MAX_TOOL_NUMBER) {
-    	tool_data.tool_id = tool_id;
+    if(tool_id <= MAX_TOOL_NUMBER) {
+        tool_data.tool_id = tool_id;
         tool.pocket = (pocket_id_t)tool_id;
-    	tool.data = &tool_data;
-	} else {
+        tool.data = &tool_data;
+    } else {
         tool.data = NULL;
         tool.pocket = (pocket_id_t)-1;
-	}
+    }
 
     return &tool;
 }
 
 // Clear all tool data in persistent storage.
-static bool settings_clear_tool_data (void)
+FLASHMEM static bool settings_clear_tool_data (void)
 {
     memset(&tool_data, 0, sizeof(tool_data_t));
 
@@ -2626,95 +2929,10 @@ static bool settings_clear_tool_data (void)
 
 #endif // N_TOOLS
 
-// Sanity check of settings, board map could have been changed...
-static void sanity_check (void)
-{
-#if LATHE_UVW_OPTION
-    settings.mode = Mode_Lathe;
-#else
-    if(settings.mode == Mode_Laser && !spindle_get_caps(false).laser)
-        settings.mode = Mode_Standard;
-#endif
-
-    if(settings.planner_buffer_blocks < 30 || settings.planner_buffer_blocks > 1000)
-        settings.planner_buffer_blocks = 35;
-
-    if(!hal.driver_cap.spindle_encoder)
-        settings.spindle.ppr = 0;
-
-    if(settings.steppers.pulse_microseconds < hal.step_us_min)
-        settings.steppers.pulse_microseconds = hal.step_us_min;
-
-    if(hal.max_step_rate) {
-
-        uint_fast8_t idx = N_AXIS;
-        do {
-            idx--;
-#if N_AXIS > 3
-            if(bit_isfalse(settings.steppers.is_rotary.mask, bit(idx)) &&
-#else
-            if(
-#endif
-            (settings.axis[idx].max_rate * settings.axis[idx].steps_per_mm) / 60.0f > (float)hal.max_step_rate)
-                settings.axis[idx].max_rate = (float)hal.max_step_rate * 60.0f / settings.axis[idx].steps_per_mm;
-            // TODO: warn if changed?
-        } while(idx);
-    }
-
-    if(settings.tool_change.mode > ToolChange_Ignore) {
-        settings.tool_change.mode = ToolChange_SemiAutomatic;
-        settings.flags.tool_change_fast_pulloff = On;
-    }
-
-    settings.probe.probe2_auto_select &= hal.driver_cap.probe2 && hal.probe.select;
-    settings.probe.toolsetter_auto_select &= hal.driver_cap.toolsetter && hal.probe.select;
-
-    if(SLEEP_DURATION <= 0.0f)
-        settings.flags.sleep_enable = Off;
-
-#if COMPATIBILITY_LEVEL > 1 && DEFAULT_DISABLE_G92_PERSISTENCE
-    settings.flags.g92_is_volatile = On;
-#endif
-
-#if COMPATIBILITY_LEVEL > 2
-    if(settings.steppers.enable_invert.mask)
-        settings.steppers.enable_invert.mask = AXES_BITMASK;
-#endif
-
-#if N_AXIS > 3
-    settings.steppers.rotary_wrap.mask &= settings.steppers.is_rotary.mask;
-#endif
-
-    settings.control_invert.mask |= limits_override.mask;
-    settings.control_disable_pullup.mask &= ~limits_override.mask;
-}
-
-// Read global settings from persistent storage.
-// Checks version-byte of non-volatile storage and global settings copy.
-bool read_global_settings (void)
-{
-    bool ok = hal.nvs.type != NVS_None && SETTINGS_VERSION == hal.nvs.get_byte(0) && hal.nvs.memcpy_from_nvs((uint8_t *)&settings, NVS_ADDR_GLOBAL, sizeof(settings_t), true) == NVS_TransferResult_OK;
-
-    sanity_check();
-
-    return ok && settings.version.id == SETTINGS_VERSION;
-}
-
-// Write global settings to persistent storage
-void settings_write_global (void)
-{
-    if(override_backup.valid)
-        restore_override_backup();
-
-    settings.flags.compatibility_level = COMPATIBILITY_LEVEL;
-
-    if(hal.nvs.type != NVS_None)
-        hal.nvs.memcpy_to_nvs(NVS_ADDR_GLOBAL, (uint8_t *)&settings, sizeof(settings_t), true);
-}
 
 #if N_SPINDLE > 1
 
-static bool get_default_spindle (spindle_info_t *spindle, void *data)
+FLASHMEM static bool get_default_spindle (spindle_info_t *spindle, void *data)
 {
     bool ok;
 
@@ -2727,7 +2945,7 @@ static bool get_default_spindle (spindle_info_t *spindle, void *data)
 #endif
 
 // Restore global settings to defaults and write to persistent storage
-void settings_restore (settings_restore_t restore)
+FLASHMEM void settings_restore (settings_restore_t restore)
 {
     uint_fast8_t idx;
     stored_line_t empty_line;
@@ -2752,19 +2970,12 @@ void settings_restore (settings_restore_t restore)
 #if N_SPINDLE > 1
         spindle_enumerate_spindles(get_default_spindle, (void *)DEFAULT_SPINDLE);
 #endif
-        settings_write_global();
+        global_settings.save();
     }
 
     if(restore.parameters) {
-        coord_system_data_t coord_data = {0};
-        for(idx = 0; idx <= N_WorkCoordinateSystems; idx++) {
-#if COMPATIBILITY_LEVEL <= 1
-            if(idx < CoordinateSystem_G59_1 || idx > CoordinateSystem_G59_3 || bit_isfalse(settings.offset_lock.mask, bit(idx - CoordinateSystem_G59_1)))
-#endif
-                settings_write_coord_data((coord_system_id_t)idx, &coord_data);
-        }
-        settings_write_coord_data(CoordinateSystem_G92, &coord_data); // Clear G92 offsets
-
+        for(idx = 0; idx < N_CoordinateSystems; idx++)
+            gc_clear_offset((coord_system_id_t)idx);
 #if N_TOOLS
         settings_clear_tool_data();
 #endif
@@ -2780,10 +2991,10 @@ void settings_restore (settings_restore_t restore)
         settings_write_build_info(BUILD_INFO);
     }
 
-    if(restore.defaults && hal.settings_changed)
-        hal.settings_changed(&settings, (settings_changed_flags_t){-1});
+    if(restore.defaults)
+        grbl.on_settings_changed(&settings, (settings_changed_flags_t){-1});
 
-    setting_details_t *details = setting_details.next;
+    setting_details_t *details = global_settings.next;
 
     if(details) do {
         if(details->is_core ? restore.defaults : restore.driver_parameters) {
@@ -2802,7 +3013,7 @@ inline static bool is_available (const setting_detail_t *setting, uint_fast16_t 
     return setting->is_available == NULL || setting->is_available(setting, offset);
 }
 
-bool settings_is_group_available (setting_group_t id)
+FLASHMEM bool settings_is_group_available (setting_group_t id)
 {
     const setting_group_detail_t *group = setting_get_group_details(id);
 
@@ -2840,7 +3051,7 @@ bool settings_is_group_available (setting_group_t id)
         default:
             {
                 uint_fast16_t idx;
-                setting_details_t *details = &setting_details;
+                setting_details_t *details = &global_settings;
 
                 do {
                     if(details->settings) {
@@ -2857,12 +3068,12 @@ bool settings_is_group_available (setting_group_t id)
     return available;
 }
 
-setting_group_t settings_normalize_group (setting_group_t group)
+FLASHMEM setting_group_t settings_normalize_group (setting_group_t group)
 {
     return (group > Group_Axis0 && group < Group_Axis0 + N_AXIS) ? Group_Axis0 : group;
 }
 
-bool settings_iterator (const setting_detail_t *setting, setting_output_ptr callback, void *data)
+FLASHMEM bool settings_iterator (const setting_detail_t *setting, setting_output_ptr callback, void *data)
 {
     bool ok = false;
 
@@ -2870,7 +3081,7 @@ bool settings_iterator (const setting_detail_t *setting, setting_output_ptr call
 
         uint_fast8_t axis_idx = 0;
 
-        for(axis_idx = 0; axis_idx < N_AXIS; axis_idx++) {
+        for(axis_idx = 0; axis_idx < system_n_axis(); axis_idx++) {
 
             if(setting->is_available == NULL || setting->is_available(setting, axis_idx)) {
 
@@ -2883,8 +3094,7 @@ bool settings_iterator (const setting_detail_t *setting, setting_output_ptr call
         }
     } else if(setting->flags.increment) {
         setting_details_t *set;
-        setting = setting_get_details(setting->id, &set);
-        if(set->iterator)
+        if((setting = setting_get_details(setting->id, &set)) && set && set->iterator)
             ok = set->iterator(setting, callback, data);
     } else
         ok = callback(setting, 0, data);
@@ -2899,6 +3109,9 @@ static inline const setting_detail_t *_setting_get_details (setting_id_t id, uin
 
     id -= offset;
 
+    if(set)
+        *set = NULL;
+
     do {
         for(idx = 0; idx < details->n_settings; idx++) {
             if(details->settings[idx].id == id && is_available(&details->settings[idx], offset)) {
@@ -2906,7 +3119,7 @@ static inline const setting_detail_t *_setting_get_details (setting_id_t id, uin
                 if(details->settings[idx].group == Group_Axis0 && grbl.on_set_axis_setting_unit)
                     set_axis_unit(&details->settings[idx], grbl.on_set_axis_setting_unit(details->settings[idx].id, offset));
 
-                if(offset && details->iterator == NULL && offset >= (details->settings[idx].group == Group_Encoder0 ? hal.encoder.get_n_encoders() : N_AXIS))
+                if(offset && details->iterator == NULL && offset >= (details->settings[idx].group == Group_Encoder0 ? encoders_get_count() : N_AXIS))
                     return NULL;
 
                 if(set)
@@ -2920,7 +3133,7 @@ static inline const setting_detail_t *_setting_get_details (setting_id_t id, uin
     return NULL;
 }
 
-const setting_detail_t *setting_get_details (setting_id_t id, setting_details_t **set)
+FLASHMEM const setting_detail_t *setting_get_details (setting_id_t id, setting_details_t **set)
 {
     const setting_detail_t *detail;
 
@@ -2951,7 +3164,7 @@ const setting_detail_t *setting_get_details (setting_id_t id, setting_details_t 
     return detail;
 }
 
-const char *setting_get_description (setting_id_t id)
+FLASHMEM const char *setting_get_description (setting_id_t id)
 {
     const char *description = NULL;
 
@@ -2980,7 +3193,7 @@ const char *setting_get_description (setting_id_t id)
     return description;
 }
 
-const setting_group_detail_t *setting_get_group_details (setting_group_t id)
+FLASHMEM const setting_group_detail_t *setting_get_group_details (setting_group_t id)
 {
     uint_fast16_t idx;
     setting_details_t *details = settings_get_details();
@@ -3005,7 +3218,7 @@ setting_group_t setting_get_parent_group (setting_group_t id)
 }
 */
 
-static status_code_t validate_value (const setting_detail_t *setting, float value)
+FLASHMEM static status_code_t validate_value (const setting_detail_t *setting, float value)
 {
     float val;
     uint_fast8_t set_idx = 0;
@@ -3033,7 +3246,7 @@ static status_code_t validate_value (const setting_detail_t *setting, float valu
     return Status_OK;
 }
 
-static status_code_t validate_uint_value (const setting_detail_t *setting, uint32_t value)
+FLASHMEM static status_code_t validate_uint_value (const setting_detail_t *setting, uint32_t value)
 {
     uint32_t val;
     uint_fast8_t set_idx = 0;
@@ -3062,23 +3275,7 @@ static status_code_t validate_uint_value (const setting_detail_t *setting, uint3
     return Status_OK;
 }
 
-static uint32_t strnumentries (const char *s, const char delimiter)
-{
-    if(s == NULL || *s == '\0')
-        return 0;
-
-    char *p = (char *)s;
-    uint32_t entries = 1;
-
-    while((p = strchr(p, delimiter))) {
-        p++;
-        entries++;
-    }
-
-    return entries;
-}
-
-setting_datatype_t setting_datatype_to_external (setting_datatype_t datatype)
+FLASHMEM setting_datatype_t setting_datatype_to_external (setting_datatype_t datatype)
 {
     switch(datatype) {
 
@@ -3094,17 +3291,17 @@ setting_datatype_t setting_datatype_to_external (setting_datatype_t datatype)
     return datatype;
 }
 
-bool setting_is_list (const setting_detail_t *setting)
+FLASHMEM bool setting_is_list (const setting_detail_t *setting)
 {
     return setting->datatype == Format_Bitfield || setting->datatype == Format_XBitfield || setting->datatype == Format_RadioButtons;
 }
 
-bool setting_is_integer (const setting_detail_t *setting)
+FLASHMEM bool setting_is_integer (const setting_detail_t *setting)
 {
     return setting->datatype == Format_Integer || setting->datatype == Format_Int8 || setting->datatype == Format_Int16;
 }
 
-static char *remove_element (char *s, uint_fast8_t entry)
+FLASHMEM static char *remove_element (char *s, uint_fast8_t entry)
 {
     while(entry && *s) {
         if(*s == ',')
@@ -3127,7 +3324,7 @@ static char *remove_element (char *s, uint_fast8_t entry)
     return s;
 }
 
-static void setting_remove_element (setting_id_t id, uint_fast8_t pos)
+FLASHMEM static void setting_remove_element (setting_id_t id, uint_fast8_t pos)
 {
     const setting_detail_t *setting = setting_get_details(id, NULL);
 
@@ -3137,7 +3334,7 @@ static void setting_remove_element (setting_id_t id, uint_fast8_t pos)
 
 // Flag setting elements for bitfields as N/A according to a mask
 // Note: setting format string has to reside in RAM.
-void setting_remove_elements (setting_id_t id, uint32_t mask, bool trim)
+FLASHMEM void setting_remove_elements (setting_id_t id, uint32_t mask, bool trim)
 {
     const setting_detail_t *setting;
 
@@ -3161,17 +3358,7 @@ void setting_remove_elements (setting_id_t id, uint32_t mask, bool trim)
     }
 }
 
-inline static bool setting_is_string (setting_datatype_t  datatype)
-{
-    return datatype == Format_String || datatype == Format_Password || datatype == Format_IPv4;
-}
-
-inline static bool setting_is_core (setting_type_t type)
-{
-    return !(type == Setting_NonCore || type == Setting_NonCoreFn);
-}
-
-static status_code_t setting_validate_me_uint (const setting_detail_t *setting, char *svalue)
+FLASHMEM static status_code_t setting_validate_me_uint (const setting_detail_t *setting, char *svalue)
 {
     uint_fast8_t idx = 0;
     uint32_t value;
@@ -3199,7 +3386,7 @@ static status_code_t setting_validate_me_uint (const setting_detail_t *setting, 
             break;
 
         case Format_AxisMask:
-            if(value >= (1 << N_AXIS))
+            if(value >= (1 << system_n_axis()))
                 status = Status_SettingValueOutOfRange;
             break;
 
@@ -3216,7 +3403,7 @@ static status_code_t setting_validate_me_uint (const setting_detail_t *setting, 
     return status;
 }
 
-status_code_t setting_validate_me (const setting_detail_t *setting, float value, char *svalue)
+FLASHMEM status_code_t setting_validate_me (const setting_detail_t *setting, float value, char *svalue)
 {
     status_code_t status = Status_OK;
 
@@ -3262,7 +3449,7 @@ status_code_t setting_validate_me (const setting_detail_t *setting, float value,
     return status;
 }
 
-status_code_t setting_validate (setting_id_t id, float value, char *svalue)
+FLASHMEM status_code_t setting_validate (setting_id_t id, float value, char *svalue)
 {
     const setting_detail_t *setting = setting_get_details(id, NULL);
 
@@ -3270,7 +3457,7 @@ status_code_t setting_validate (setting_id_t id, float value, char *svalue)
     return setting == NULL ? Status_OK : setting_validate_me(setting, value, svalue);
 }
 
-static bool settings_changed_spindle (void)
+FLASHMEM static bool settings_changed_spindle (void)
 {
     static spindle_settings_t spindle_settings = {};
     static spindle_pwm_settings_t spindle_pwm_settings = {};
@@ -3298,7 +3485,7 @@ FLASHMEM status_code_t settings_store_setting (setting_id_t id, char *svalue)
 
     if(setting == NULL) {
         if(id == Setting_SpindlePWMBehaviour) {
-            set = &setting_details;
+            set = &global_settings;
             setting = &setting_detail[Setting_SpindlePWMBehaviour];
         } else
             return Status_SettingDisabled;
@@ -3394,8 +3581,8 @@ FLASHMEM status_code_t settings_store_setting (setting_id_t id, char *svalue)
         if(set->save)
             set->save();
 
-        if(set == &setting_details)
-            set->on_changed = hal.settings_changed;
+        if(set == &global_settings && set->on_changed == NULL)
+            set->on_changed = grbl.on_settings_changed;
 
         if(set->on_changed) {
 
@@ -3405,13 +3592,32 @@ FLASHMEM status_code_t settings_store_setting (setting_id_t id, char *svalue)
             machine_mode_changed = false;
 
             set->on_changed(&settings, changed);
+
+            switch(setting->id) {
+
+                case Setting_SteppersEnergize:
+                    hal.stepper.enable(settings.steppers.energize, true);
+                    break;
+
+                case Setting_HomingCycle_1:
+                case Setting_HomingCycle_2:
+                case Setting_HomingCycle_3:
+                case Setting_HomingCycle_4:
+                case Setting_HomingCycle_5:
+                case Setting_HomingCycle_6:
+                    limits_set_homing_axes();
+                    break;
+
+                default:
+                    break;
+            }
         }
     }
 
     return status;
 }
 
-bool settings_add_spindle_type (const char *type)
+FLASHMEM bool settings_add_spindle_type (const char *type)
 {
     bool ok;
 
@@ -3424,7 +3630,7 @@ bool settings_add_spindle_type (const char *type)
     return ok;
 }
 
-void onFileDemarcate (bool start)
+FLASHMEM void onFileDemarcate (bool start)
 {
     if(!start) {
 
@@ -3441,15 +3647,8 @@ void onFileDemarcate (bool start)
         on_file_demarcate(start);
 }
 
-// Clear settings chain
-void settings_clear (void)
-{
-    setting_details.next = NULL;
-    settingsd = &setting_details;
-}
-
 // Initialize the config subsystem
-void settings_init (void)
+FLASHMEM void settings_init (void)
 {
     settings_changed_flags_t changed = {0};
 
@@ -3494,7 +3693,7 @@ void settings_init (void)
 
         changed.spindle = settings_changed_spindle();
 
-        hal.settings_changed(&settings, changed);
+        grbl.on_settings_changed(&settings, changed);
 
         if(hal.probe.configure) // Initialize probe invert mask.
             hal.probe.configure(false, false);
@@ -3550,7 +3749,7 @@ void settings_init (void)
     } while(idx);
 #endif
 
-    setting_details_t *details = setting_details.next;
+    setting_details_t *details = global_settings.next;
 
     if(details) do {
         if(details->load)
@@ -3566,7 +3765,7 @@ void settings_init (void)
     setting_remove_elements(Setting_DoorOptions, ((!settings.parking.flags.enabled || hal.signals_cap.safety_door_ajar) << 1) | hal.signals_cap.safety_door_ajar, true);
 #endif
 #if N_AXIS > 3
-    for(idx = 3; idx < N_AXIS; idx++)
+    for(idx = 3; idx < system_n_axis(); idx++)
         *(rotary_axes + (idx - 3) * 7) = *axis_letter[idx];
 #endif
 
@@ -3588,16 +3787,16 @@ void settings_init (void)
             settings.coolant.on_delay = settings.safety_door.coolant_on_delay * 1000.0f;
             if((changed.spindle = settings.spindle.at_speed_tolerance != settings.pwm_spindle.at_speed_tolerance)) {
                 settings.spindle.at_speed_tolerance = settings.pwm_spindle.at_speed_tolerance;
-                hal.settings_changed(&settings, changed);
+                grbl.on_settings_changed(&settings, changed);
             }
         }
 
         settings.version.build = (GRBL_BUILD - 20000000UL);
 
-        settings_write_global();
+        global_settings.save();
     }
 
-    setting_details.on_changed = hal.settings_changed;
+    global_settings.on_changed = grbl.on_settings_changed;
 
     on_file_demarcate = grbl.on_file_demarcate;
     grbl.on_file_demarcate = onFileDemarcate;

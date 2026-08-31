@@ -25,6 +25,7 @@
 typedef struct rd_stream {
     vfs_file_t *file_new;
     vfs_file_t *file;
+    line_number_t line_number;
     stream_read_ptr read;
     stream_type_t type;
     status_message_ptr status_handler;
@@ -32,10 +33,12 @@ typedef struct rd_stream {
     struct rd_stream *next;
 } rd_stream_t;
 
+static volatile line_number_t line_number = 0;
 static rd_stream_t *rd_streams = NULL;
 static status_message_ptr status_message;
 static on_file_end_ptr on_file_end;
 static on_report_handlers_init_ptr on_report_handlers_init;
+static on_line_number_assigned_ptr on_line_number_assigned = NULL;
 
 // File stream input function.
 // Reads character by character from a file and returns them when
@@ -51,6 +54,7 @@ static int32_t stream_read_file (void)
             if(c == ASCII_CR || c == ASCII_LF) {
                 if(eol_ok)
                     return SERIAL_NO_DATA;
+                line_number++;
                 eol_ok = true;
             } else
                 eol_ok = false;
@@ -67,7 +71,19 @@ static int32_t stream_read_file (void)
     return (int32_t)c;
 }
 
-static status_code_t onFileEnd (vfs_file_t *file, status_code_t status)
+FLASHMEM static line_number_t onLineNumberAssigned (line_number_t pline_number)
+{
+    if(rd_streams) {
+        if(pline_number)
+            line_number = pline_number;
+        else
+            pline_number = line_number;
+    }
+
+    return on_line_number_assigned ? on_line_number_assigned(pline_number) : pline_number;
+}
+
+FLASHMEM static status_code_t onFileEnd (vfs_file_t *file, status_code_t status)
 {
     rd_stream_t *stream;
 
@@ -88,7 +104,7 @@ static status_code_t onFileEnd (vfs_file_t *file, status_code_t status)
 // This code will be executed after each command is sent to the parser,
 // If an error is detected reading from file(s) will be stopped and the
 // status_code reported, if not a "ok" status reply will not be output.
-static status_code_t trap_status_messages (status_code_t status)
+FLASHMEM static status_code_t trap_status_messages (status_code_t status)
 {
     gc_state.last_error = status;
 
@@ -111,7 +127,7 @@ static status_code_t trap_status_messages (status_code_t status)
     return status;
 }
 
-static void onReportHandlersInit (void)
+FLASHMEM static void onReportHandlersInit (void)
 {
     if(on_report_handlers_init)
         on_report_handlers_init();
@@ -120,19 +136,19 @@ static void onReportHandlersInit (void)
     grbl.report.status_message = trap_status_messages;
 }
 
-void stream_set_type (stream_type_t type, vfs_file_t *file)
+FLASHMEM void stream_set_type (stream_type_t type, vfs_file_t *file)
 {
     hal.stream.type = type;
     if(!(hal.stream.file = file))
         gc_state.file_stream = false;
 }
 
-bool stream_is_file (void)
+FLASHMEM bool stream_is_file (void)
 {
     return hal.stream.type == StreamType_File;
 }
 
-vfs_file_t *stream_redirect_read (char *filename, status_message_ptr status_handler, on_file_end_ptr eof_handler)
+FLASHMEM vfs_file_t *stream_redirect_read (char *filename, status_message_ptr status_handler, on_file_end_ptr eof_handler)
 {
     static bool error_handler_ok = false;
 
@@ -141,6 +157,7 @@ vfs_file_t *stream_redirect_read (char *filename, status_message_ptr status_hand
     if((file = vfs_open(filename, "r"))) {
         rd_stream_t *rd_stream, *streams = rd_streams;
         if((rd_stream = malloc(sizeof(rd_stream_t)))) {
+            rd_stream->line_number = rd_streams ? line_number : 0;
             rd_stream->file = hal.stream.file;
             rd_stream->type = hal.stream.type;
             rd_stream->file_new = file;
@@ -158,6 +175,7 @@ vfs_file_t *stream_redirect_read (char *filename, status_message_ptr status_hand
                     break;
                 }
             } while((streams = streams->next));
+            line_number = 0;
         } else {
             vfs_close(file);
             file = NULL;
@@ -175,19 +193,31 @@ vfs_file_t *stream_redirect_read (char *filename, status_message_ptr status_hand
 
         on_file_end = grbl.on_file_end;
         grbl.on_file_end = onFileEnd;
+
+        on_line_number_assigned = grbl.on_line_number_assigned;
+        grbl.on_line_number_assigned = onLineNumberAssigned;
     }
 
     return file;
 }
 
-void stream_redirect_close (vfs_file_t *file)
+FLASHMEM void stream_reposition (vfs_file_t *file, size_t pos, line_number_t line_number)
+{
+    vfs_seek(file, pos);
+
+    if(line_number && grbl.on_line_number_assigned)
+        grbl.on_line_number_assigned(line_number);
+}
+
+FLASHMEM void stream_redirect_close (vfs_file_t *file)
 {
     rd_stream_t *stream = rd_streams, *prev_stream = NULL;
 
     if(stream) do {
         if(stream->file_new == file) {
             vfs_close(file);
-            hal.stream.read = stream->read;
+            if((hal.stream.read = stream->read) == stream_read_file)
+                line_number = stream->line_number;
             stream_set_type(stream->type, stream->file);
             if(stream == rd_streams)
                 rd_streams = stream->next;
