@@ -37,6 +37,8 @@ specific needs, i.e. performance tuning or adjusting to non-typical machines.
 #define ENABLE_BACKLASH_COMPENSATION On
 #define N_TOOLS 10
 
+#define COOLANT_ENABLE COOLANT_FLOOD
+
 // Compile time only default configuration
 
 /*! \def N_AXIS
